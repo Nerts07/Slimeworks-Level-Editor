@@ -232,99 +232,6 @@ static void ToggleCollision(Editor *editor)
     SetStatus(editor, "Collider toggled");
 }
 
-static Vector3 CameraDirection(float yaw, float pitch)
-{
-    return Vector3Normalize((Vector3){ sinf(yaw) * cosf(pitch), sinf(pitch), cosf(yaw) * cosf(pitch) });
-}
-
-static void SyncOrbitCamera(Editor *editor)
-{
-    Vector3 offset = {
-        sinf(editor->orbitYaw) * cosf(editor->orbitPitch) * editor->orbitDistance,
-        sinf(editor->orbitPitch) * editor->orbitDistance,
-        cosf(editor->orbitYaw) * cosf(editor->orbitPitch) * editor->orbitDistance
-    };
-    editor->camera.position = Vector3Add(editor->orbitTarget, offset);
-    editor->camera.target = editor->orbitTarget;
-}
-
-static void SetCameraAnglesFromDirection(Editor *editor, Vector3 direction)
-{
-    direction = Vector3Normalize(direction);
-    editor->orbitYaw = atan2f(direction.x, direction.z);
-    editor->orbitPitch = asinf(direction.y);
-}
-
-static void ToggleCameraMode(Editor *editor)
-{
-    Vector3 direction = Vector3Normalize(Vector3Subtract(editor->camera.target, editor->camera.position));
-    SetCameraAnglesFromDirection(editor, direction);
-    if (editor->cameraMode == EDITOR_CAMERA_ORBIT) {
-        editor->cameraMode = EDITOR_CAMERA_FREE;
-        SetStatus(editor, "Free camera mode — hold RMB, then fly with WASD");
-    } else {
-        editor->cameraMode = EDITOR_CAMERA_ORBIT;
-        editor->orbitTarget = Vector3Add(editor->camera.position, Vector3Scale(direction, editor->orbitDistance));
-        SetCameraAnglesFromDirection(editor, Vector3Scale(direction, -1.0f));
-        SyncOrbitCamera(editor);
-        SetStatus(editor, "Orbit camera mode — Blender MMB controls restored");
-    }
-}
-
-static void UpdateCameraController(Editor *editor, float deltaTime)
-{
-    float wheel = GetMouseWheelMove();
-    if (editor->cameraMode == EDITOR_CAMERA_ORBIT) {
-        if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
-            Vector2 mouseDelta = GetMouseDelta();
-            if (ShiftHeld()) {
-                Vector3 forward = Vector3Normalize(Vector3Subtract(editor->camera.target, editor->camera.position));
-                Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, editor->camera.up));
-                Vector3 up = Vector3Normalize(Vector3CrossProduct(right, forward));
-                float panSpeed = editor->orbitDistance * 0.0018f;
-                editor->orbitTarget = Vector3Add(editor->orbitTarget, Vector3Scale(right, -mouseDelta.x * panSpeed));
-                editor->orbitTarget = Vector3Add(editor->orbitTarget, Vector3Scale(up, mouseDelta.y * panSpeed));
-            } else {
-                editor->orbitYaw -= mouseDelta.x * 0.008f;
-                editor->orbitPitch += mouseDelta.y * 0.008f;
-                if (editor->orbitPitch > 1.48f) editor->orbitPitch = 1.48f;
-                if (editor->orbitPitch < -1.48f) editor->orbitPitch = -1.48f;
-            }
-        }
-        if (fabsf(wheel) > 0.001f) {
-            editor->orbitDistance *= powf(0.84f, wheel);
-            if (editor->orbitDistance < 1.5f) editor->orbitDistance = 1.5f;
-            if (editor->orbitDistance > 250.0f) editor->orbitDistance = 250.0f;
-        }
-        SyncOrbitCamera(editor);
-        return;
-    }
-
-    Vector3 direction = CameraDirection(editor->orbitYaw, editor->orbitPitch);
-    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-        Vector2 mouseDelta = GetMouseDelta();
-        editor->orbitYaw -= mouseDelta.x * 0.008f;
-        editor->orbitPitch += mouseDelta.y * 0.008f;
-        if (editor->orbitPitch > 1.48f) editor->orbitPitch = 1.48f;
-        if (editor->orbitPitch < -1.48f) editor->orbitPitch = -1.48f;
-        direction = CameraDirection(editor->orbitYaw, editor->orbitPitch);
-        Vector3 flatForward = Vector3Normalize((Vector3){ direction.x, 0.0f, direction.z });
-        Vector3 right = Vector3Normalize(Vector3CrossProduct(flatForward, editor->camera.up));
-        float speed = ShiftHeld() ? 16.0f : 7.0f;
-        Vector3 movement = { 0 };
-        if (IsKeyDown(KEY_W)) movement = Vector3Add(movement, flatForward);
-        if (IsKeyDown(KEY_S)) movement = Vector3Subtract(movement, flatForward);
-        if (IsKeyDown(KEY_D)) movement = Vector3Add(movement, right);
-        if (IsKeyDown(KEY_A)) movement = Vector3Subtract(movement, right);
-        if (IsKeyDown(KEY_E)) movement.y += 1.0f;
-        if (IsKeyDown(KEY_Q)) movement.y -= 1.0f;
-        if (Vector3Length(movement) > 0.001f) editor->camera.position = Vector3Add(editor->camera.position,
-            Vector3Scale(Vector3Normalize(movement), speed * deltaTime));
-    }
-    if (fabsf(wheel) > 0.001f) editor->camera.position = Vector3Add(editor->camera.position, Vector3Scale(direction, wheel * 1.6f));
-    editor->camera.target = Vector3Add(editor->camera.position, direction);
-}
-
 static Vector3 GizmoOrigin(const LevlObject *object)
 {
     if (object->type == LEVL_OBJECT_PLATFORM) return (Vector3){ object->position.x, object->data.platform.top, object->position.z };
@@ -511,8 +418,7 @@ static void SetGizmoMode(Editor *editor, EditorGizmoMode mode)
 
 static void UpdateEditorControls(Editor *editor, float deltaTime)
 {
-    UpdateCameraController(editor, deltaTime);
-    if (editor->cameraMode == EDITOR_CAMERA_FREE && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) return;
+    if (EditorNavigationUpdate(&editor->navigation, &editor->camera, deltaTime)) return;
 
     if (editor->gizmoDrag.active) { UpdateGizmoDrag(editor); return; }
     LevlObject *object = SelectedObject(editor);
@@ -540,7 +446,12 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
         return;
     }
 
-    if (ShiftHeld() && IsKeyPressed(KEY_RIGHT_BRACKET)) { ToggleCameraMode(editor); return; }
+    if (ShiftHeld() && IsKeyPressed(KEY_RIGHT_BRACKET)) {
+        EditorNavigationToggleMode(&editor->navigation, &editor->camera);
+        SetStatus(editor, editor->navigation.mode == EDITOR_NAVIGATION_FREE ?
+                            "Free camera mode enabled" : "Orbit camera mode enabled");
+        return;
+    }
     if (ShiftHeld() && IsKeyPressed(KEY_S)) { editor->snapEnabled = !editor->snapEnabled; SetStatus(editor, editor->snapEnabled ? "Grid snapping enabled" : "Grid snapping disabled"); return; }
     if (ShiftHeld() && IsKeyPressed(KEY_COMMA)) { AdjustGridStep(editor, -1); return; }
     if (ShiftHeld() && IsKeyPressed(KEY_PERIOD)) { AdjustGridStep(editor, 1); return; }
@@ -617,7 +528,7 @@ static void DrawInspector(const Editor *editor)
     DrawTextLine("SLIMEWORKS LEVEL EDITOR", x, &y, 19, (Color){ 124, 255, 187, 255 });
     DrawTextLine(editor->document.dirty ? "Unsaved changes" : "Saved", x, &y, 14, editor->document.dirty ? ORANGE : LIGHTGRAY);
     DrawTextLine(TextFormat("Grid %.3g | snap %s", editor->gridStep, editor->snapEnabled ? "on" : "off"), x, &y, 14, editor->snapEnabled ? LIME : LIGHTGRAY);
-    DrawTextLine(editor->cameraMode == EDITOR_CAMERA_ORBIT ? "Camera: orbit" : "Camera: free", x, &y, 14, LIGHTGRAY);
+    DrawTextLine(TextFormat("Camera: %s", EditorNavigationModeName(&editor->navigation)), x, &y, 14, LIGHTGRAY);
     y += 8;
     const LevlObject *object = editor->selectedIndex >= 0 && editor->selectedIndex < editor->document.objectCount ? &editor->document.objects[editor->selectedIndex] : NULL;
     if (object) {
@@ -657,8 +568,9 @@ static void DrawInspector(const Editor *editor)
     DrawTextLine("O collider | H show colliders | Del delete", x, &y, 14, LIGHTGRAY);
     DrawTextLine("SAVE / EXPORT", x, &y, 16, (Color){ 124, 255, 187, 255 });
     DrawTextLine("Ctrl+S save | Ctrl+O load | F6 export to game", x, &y, 14, LIGHTGRAY);
-    DrawTextLine("MMB orbit | Shift+MMB pan | wheel zoom", x, &y, 14, LIGHTGRAY);
-    DrawTextLine("Shift+] free/orbit | free: RMB + WASD/QE", x, &y, 14, LIGHTGRAY);
+    DrawTextLine(EditorNavigationOrbitHint(&editor->navigation), x, &y, 14, LIGHTGRAY);
+    DrawTextLine("Wheel/two-finger scroll zoom | Shift+] free/orbit", x, &y, 14, LIGHTGRAY);
+    DrawTextLine(EditorNavigationFreeHint(&editor->navigation), x, &y, 14, LIGHTGRAY);
 }
 
 static void DrawOverlay(const Editor *editor)
@@ -678,7 +590,7 @@ static void DrawOverlay(const Editor *editor)
 
 void EditorInit(Editor *editor)
 {
-    *editor = (Editor){ .selectedIndex = 0, .showColliders = true, .cameraMode = EDITOR_CAMERA_ORBIT,
+    *editor = (Editor){ .selectedIndex = 0, .showColliders = true,
                         .gizmoMode = EDITOR_GIZMO_MOVE, .gizmoHighlightedAxis = -1, .snapEnabled = true, .gridStep = 1.0f };
     InitWindow(1280, 720, "Slimeworks Level Editor");
     SetTargetFPS(60);
@@ -686,12 +598,7 @@ void EditorInit(Editor *editor)
         .position = { 24.0f, 19.0f, 24.0f }, .target = { 0.0f, 0.0f, 0.0f },
         .up = { 0.0f, 1.0f, 0.0f }, .fovy = 50.0f, .projection = CAMERA_PERSPECTIVE
     };
-    editor->orbitTarget = editor->camera.target;
-    Vector3 initialOffset = Vector3Subtract(editor->camera.position, editor->orbitTarget);
-    editor->orbitDistance = Vector3Length(initialOffset);
-    editor->orbitYaw = atan2f(initialOffset.x, initialOffset.z);
-    editor->orbitPitch = asinf(initialOffset.y / editor->orbitDistance);
-    SyncOrbitCamera(editor);
+    EditorNavigationInit(&editor->navigation, &editor->camera);
     LevlDocumentNew(&editor->document);
     SetStatus(editor, "Starter level ready — F6 exports it to the game");
 }

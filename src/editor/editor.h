@@ -2,6 +2,7 @@
 #define SLIMEWORKS_EDITOR_H
 
 #include "../level/levl.h"
+#include "../navigation/editor_navigation.h"
 #include "../render/scene_draw.h"
 
 typedef enum EditorTextMode {
@@ -10,11 +11,6 @@ typedef enum EditorTextMode {
     EDITOR_TEXT_TAG,
     EDITOR_TEXT_IMPORT
 } EditorTextMode;
-
-typedef enum EditorCameraMode {
-    EDITOR_CAMERA_ORBIT,
-    EDITOR_CAMERA_FREE
-} EditorCameraMode;
 
 typedef struct EditorGizmoDrag {
     bool active;
@@ -34,11 +30,7 @@ typedef struct EditorGizmoDrag {
 typedef struct Editor {
     LevlDocument document;
     Camera3D camera;
-    EditorCameraMode cameraMode;
-    Vector3 orbitTarget;
-    float orbitYaw;
-    float orbitPitch;
-    float orbitDistance;
+    EditorNavigation navigation;
     int selectedIndex;
     int selectedFace;
     EditorGizmoMode gizmoMode;
