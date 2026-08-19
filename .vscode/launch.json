@@ -1,0 +1,14 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run Slimeworks Level Editor",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/main",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Slimeworks Level Editor: rebuild before launch",
+            "MIMode": "lldb"
+        }
+    ]
+}

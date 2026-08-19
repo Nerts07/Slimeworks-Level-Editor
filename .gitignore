@@ -1,0 +1,10 @@
+main
+*.dSYM/
+.DS_Store
+level.levl
+assets/*.glb
+assets/*.gltf
+assets/*.obj
+assets/*.iqm
+assets/*.vox
+

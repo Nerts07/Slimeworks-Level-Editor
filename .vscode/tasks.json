@@ -1,0 +1,20 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Slimeworks Level Editor: build",
+            "type": "shell",
+            "command": "make",
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": ["$gcc"],
+            "group": { "kind": "build", "isDefault": true }
+        },
+        {
+            "label": "Slimeworks Level Editor: rebuild before launch",
+            "type": "shell",
+            "command": "make clean && make",
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": ["$gcc"]
+        }
+    ]
+}

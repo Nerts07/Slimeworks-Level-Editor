@@ -1,0 +1,17 @@
+{
+    "configurations": [
+        {
+            "name": "macOS raylib",
+            "compilerPath": "/usr/bin/clang",
+            "cStandard": "c17",
+            "intelliSenseMode": "macos-clang-arm64",
+            "includePath": [
+                "${workspaceFolder}/src",
+                "/opt/homebrew/include",
+                "/opt/homebrew/opt/raylib/include",
+                "/opt/homebrew/Cellar/raylib/6.0/include"
+            ]
+        }
+    ],
+    "version": 4
+}

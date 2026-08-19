@@ -1,0 +1,81 @@
+#ifndef SLIMEWORKS_EDITOR_LEVL_H
+#define SLIMEWORKS_EDITOR_LEVL_H
+
+#include <raylib.h>
+#include <stdbool.h>
+
+#define LEVL_MAX_OBJECTS 256
+#define LEVL_NAME_LENGTH 32
+#define LEVL_TAG_LENGTH 32
+#define LEVL_PATH_LENGTH 256
+
+typedef enum LevlObjectType {
+    LEVL_OBJECT_BOX,
+    LEVL_OBJECT_PLATFORM,
+    LEVL_OBJECT_RAMP,
+    LEVL_OBJECT_MODEL,
+    LEVL_OBJECT_MARKER
+} LevlObjectType;
+
+typedef struct LevlBoxData {
+    Vector3 size;
+    Vector3 rotation;
+    Color faceColors[6];
+    float bevel;
+    int subdivisions;
+    bool collidable;
+} LevlBoxData;
+
+typedef struct LevlPlatformData {
+    Vector2 size;
+    float top;
+    Color color;
+} LevlPlatformData;
+
+typedef struct LevlRampData {
+    Vector3 end;
+    float width;
+    Color color;
+} LevlRampData;
+
+typedef struct LevlModelData {
+    char assetPath[LEVL_PATH_LENGTH];
+    Vector3 rotation;
+    Vector3 scale;
+    Vector3 collisionSize;
+    bool collidable;
+} LevlModelData;
+
+typedef struct LevlObject {
+    int id;
+    LevlObjectType type;
+    char name[LEVL_NAME_LENGTH];
+    char tag[LEVL_TAG_LENGTH];
+    Vector3 position;
+    union {
+        LevlBoxData box;
+        LevlPlatformData platform;
+        LevlRampData ramp;
+        LevlModelData model;
+    } data;
+} LevlObject;
+
+typedef struct LevlDocument {
+    char name[LEVL_NAME_LENGTH];
+    char filePath[LEVL_PATH_LENGTH];
+    LevlObject objects[LEVL_MAX_OBJECTS];
+    int objectCount;
+    int nextId;
+    bool dirty;
+} LevlDocument;
+
+void LevlDocumentNew(LevlDocument *document);
+LevlObject *LevlDocumentAdd(LevlDocument *document, LevlObjectType type);
+bool LevlDocumentRemove(LevlDocument *document, int index);
+bool LevlDocumentSave(LevlDocument *document, const char *filePath, char *message, int messageSize);
+bool LevlDocumentLoad(LevlDocument *document, const char *filePath, char *message, int messageSize);
+bool LevlDocumentExportToGame(const LevlDocument *document, const char *gameLevelPath, char *message, int messageSize);
+BoundingBox LevlObjectGetBounds(const LevlObject *object);
+const char *LevlObjectTypeName(LevlObjectType type);
+
+#endif
