@@ -188,11 +188,48 @@ void EditorSceneDrawGizmo(const LevlObject *object, EditorGizmoMode mode, int hi
     DrawSphere(origin, 0.08f, WHITE);
 }
 
-void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache *modelCache, int cacheCount,
-                     bool showColliders, float gridStep)
+static float SnapToGrid(float value, float step)
 {
-    int gridSlices = gridStep < 0.5f ? 80 : 160;
-    DrawGrid(gridSlices, gridStep);
+    return roundf(value / step) * step;
+}
+
+static void DrawInfiniteGrid(const Camera3D *camera, bool orthographic, float gridStep)
+{
+    Vector3 forward = Vector3Normalize(Vector3Subtract(camera->target, camera->position));
+    Vector3 right, up, center;
+    float radius;
+    if (orthographic) {
+        right = Vector3Normalize(Vector3CrossProduct(forward, camera->up));
+        up = Vector3Normalize(Vector3CrossProduct(right, forward));
+        float alongRight = SnapToGrid(Vector3DotProduct(camera->target, right), gridStep);
+        float alongUp = SnapToGrid(Vector3DotProduct(camera->target, up), gridStep);
+        float depth = Vector3DotProduct(camera->target, forward) + 0.02f;
+        center = Vector3Add(Vector3Add(Vector3Scale(right, alongRight), Vector3Scale(up, alongUp)), Vector3Scale(forward, depth));
+        radius = fmaxf(30.0f, camera->fovy * 1.7f);
+    } else {
+        right = (Vector3){ 1.0f, 0.0f, 0.0f };
+        up = (Vector3){ 0.0f, 0.0f, 1.0f };
+        center = (Vector3){ SnapToGrid(camera->target.x, gridStep), 0.0f, SnapToGrid(camera->target.z, gridStep) };
+        radius = fmaxf(70.0f, Vector3Distance(camera->position, camera->target) * 3.0f);
+    }
+    int lineCount = (int)ceilf(radius / gridStep);
+    if (lineCount < 24) lineCount = 24;
+    Color minor = (Color){ 143, 187, 205, 32 };
+    Color major = (Color){ 159, 219, 226, 62 };
+    for (int line = -lineCount; line <= lineCount; ++line) {
+        float offset = line * gridStep;
+        Color color = line % 10 == 0 ? major : minor;
+        Vector3 a = Vector3Add(center, Vector3Scale(up, offset));
+        DrawLine3D(Vector3Subtract(a, Vector3Scale(right, radius)), Vector3Add(a, Vector3Scale(right, radius)), color);
+        Vector3 b = Vector3Add(center, Vector3Scale(right, offset));
+        DrawLine3D(Vector3Subtract(b, Vector3Scale(up, radius)), Vector3Add(b, Vector3Scale(up, radius)), color);
+    }
+}
+
+void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache *modelCache, int cacheCount,
+                     bool showColliders, const Camera3D *camera, bool orthographicGrid, float gridStep)
+{
+    DrawInfiniteGrid(camera, orthographicGrid, gridStep);
     for (int i = 0; i < document->objectCount; ++i) {
         LevlObject *object = &document->objects[i];
         switch (object->type) {

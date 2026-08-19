@@ -419,6 +419,10 @@ static void SetGizmoMode(Editor *editor, EditorGizmoMode mode)
 static void UpdateEditorControls(Editor *editor, float deltaTime)
 {
     if (EditorNavigationUpdate(&editor->navigation, &editor->camera, deltaTime)) return;
+    if (EditorNavigationHandleViewShortcuts(&editor->navigation, &editor->camera)) {
+        SetStatus(editor, "Orthographic view snapped; orbit to return to perspective");
+        return;
+    }
 
     if (editor->gizmoDrag.active) { UpdateGizmoDrag(editor); return; }
     LevlObject *object = SelectedObject(editor);
@@ -571,6 +575,8 @@ static void DrawInspector(const Editor *editor)
     DrawTextLine(EditorNavigationOrbitHint(&editor->navigation), x, &y, 14, LIGHTGRAY);
     DrawTextLine("Wheel/two-finger scroll zoom | Shift+] free/orbit", x, &y, 14, LIGHTGRAY);
     DrawTextLine(EditorNavigationFreeHint(&editor->navigation), x, &y, 14, LIGHTGRAY);
+    DrawTextLine(EditorNavigationViewHint(&editor->navigation), x, &y, 14, LIGHTGRAY);
+    DrawTextLine("Orthographic grid faces camera; orbit returns perspective", x, &y, 14, LIGHTGRAY);
 }
 
 static void DrawOverlay(const Editor *editor)
@@ -615,7 +621,7 @@ void EditorRun(Editor *editor)
         ClearBackground((Color){ 36, 62, 83, 255 });
         BeginMode3D(editor->camera);
         EditorSceneDraw(&editor->document, editor->selectedIndex, editor->modelCache, LEVL_MAX_OBJECTS,
-                        editor->showColliders, editor->gridStep);
+                        editor->showColliders, &editor->camera, EditorNavigationIsOrthographic(&editor->navigation), editor->gridStep);
         LevlObject *selected = SelectedObject(editor);
         if (selected) EditorSceneDrawGizmo(selected, editor->gizmoMode, editor->gizmoHighlightedAxis);
         EndMode3D();

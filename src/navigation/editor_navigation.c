@@ -13,6 +13,11 @@ static bool AltHeld(void)
     return IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
 }
 
+static bool ControlHeld(void)
+{
+    return IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
+}
+
 static Vector3 DirectionFromAngles(float yaw, float pitch)
 {
     return Vector3Normalize((Vector3){ sinf(yaw) * cosf(pitch), sinf(pitch), cosf(yaw) * cosf(pitch) });
@@ -88,6 +93,12 @@ void EditorNavigationToggleMode(EditorNavigation *navigation, Camera3D *camera)
 {
     Vector3 forward = Vector3Normalize(Vector3Subtract(camera->target, camera->position));
     if (navigation->mode == EDITOR_NAVIGATION_ORBIT) {
+        if (navigation->orthographic) {
+            navigation->orthographic = false;
+            camera->projection = CAMERA_PERSPECTIVE;
+            camera->fovy = 50.0f;
+            camera->up = (Vector3){ 0.0f, 1.0f, 0.0f };
+        }
         navigation->mode = EDITOR_NAVIGATION_FREE;
         SetAnglesFromDirection(navigation, forward);
         return;
@@ -96,6 +107,39 @@ void EditorNavigationToggleMode(EditorNavigation *navigation, Camera3D *camera)
     navigation->orbitTarget = Vector3Add(camera->position, Vector3Scale(forward, navigation->orbitDistance));
     SetAnglesFromDirection(navigation, Vector3Scale(forward, -1.0f));
     SyncOrbitCamera(navigation, camera);
+}
+
+static void SnapToView(EditorNavigation *navigation, Camera3D *camera, EditorNavigationView view)
+{
+    Vector3 offset = { 0.0f, 0.0f, navigation->orbitDistance };
+    camera->up = (Vector3){ 0.0f, 1.0f, 0.0f };
+    if (view == EDITOR_VIEW_RIGHT) offset = (Vector3){ navigation->orbitDistance, 0.0f, 0.0f };
+    if (view == EDITOR_VIEW_TOP) {
+        offset = (Vector3){ 0.0f, navigation->orbitDistance, 0.0f };
+        camera->up = (Vector3){ 0.0f, 0.0f, -1.0f };
+    }
+    navigation->mode = EDITOR_NAVIGATION_ORBIT;
+    navigation->orthographic = true;
+    navigation->orbitTarget = camera->target;
+    SetAnglesFromDirection(navigation, offset);
+    camera->projection = CAMERA_ORTHOGRAPHIC;
+    camera->fovy = fmaxf(8.0f, navigation->orbitDistance * 0.75f);
+    SyncOrbitCamera(navigation, camera);
+}
+
+bool EditorNavigationHandleViewShortcuts(EditorNavigation *navigation, Camera3D *camera)
+{
+    if (navigation->profile == EDITOR_NAVIGATION_MACOS) {
+        if (!ControlHeld() || !ShiftHeld()) return false;
+        if (IsKeyPressed(KEY_ONE)) { SnapToView(navigation, camera, EDITOR_VIEW_FRONT); return true; }
+        if (IsKeyPressed(KEY_THREE)) { SnapToView(navigation, camera, EDITOR_VIEW_RIGHT); return true; }
+        if (IsKeyPressed(KEY_SEVEN)) { SnapToView(navigation, camera, EDITOR_VIEW_TOP); return true; }
+        return false;
+    }
+    if (IsKeyPressed(KEY_KP_1)) { SnapToView(navigation, camera, EDITOR_VIEW_FRONT); return true; }
+    if (IsKeyPressed(KEY_KP_3)) { SnapToView(navigation, camera, EDITOR_VIEW_RIGHT); return true; }
+    if (IsKeyPressed(KEY_KP_7)) { SnapToView(navigation, camera, EDITOR_VIEW_TOP); return true; }
+    return false;
 }
 
 bool EditorNavigationUpdate(EditorNavigation *navigation, Camera3D *camera, float deltaTime)
@@ -114,15 +158,27 @@ bool EditorNavigationUpdate(EditorNavigation *navigation, Camera3D *camera, floa
                 navigation->orbitTarget = Vector3Add(navigation->orbitTarget, Vector3Scale(right, -mouseDelta.x * panSpeed));
                 navigation->orbitTarget = Vector3Add(navigation->orbitTarget, Vector3Scale(up, mouseDelta.y * panSpeed));
             } else {
+                if (navigation->orthographic && Vector2Length(mouseDelta) > 0.01f) {
+                    navigation->orthographic = false;
+                    camera->projection = CAMERA_PERSPECTIVE;
+                    camera->fovy = 50.0f;
+                    camera->up = (Vector3){ 0.0f, 1.0f, 0.0f };
+                }
                 navigation->yaw -= mouseDelta.x * 0.008f;
                 navigation->pitch += mouseDelta.y * 0.008f;
                 ClampPitch(navigation);
             }
         }
         if (fabsf(wheel) > 0.001f) {
-            navigation->orbitDistance *= powf(0.84f, wheel);
-            if (navigation->orbitDistance < 1.5f) navigation->orbitDistance = 1.5f;
-            if (navigation->orbitDistance > 250.0f) navigation->orbitDistance = 250.0f;
+            if (navigation->orthographic) {
+                camera->fovy *= powf(0.84f, wheel);
+                if (camera->fovy < 2.0f) camera->fovy = 2.0f;
+                if (camera->fovy > 160.0f) camera->fovy = 160.0f;
+            } else {
+                navigation->orbitDistance *= powf(0.84f, wheel);
+                if (navigation->orbitDistance < 1.5f) navigation->orbitDistance = 1.5f;
+                if (navigation->orbitDistance > 250.0f) navigation->orbitDistance = 250.0f;
+            }
         }
         SyncOrbitCamera(navigation, camera);
         return pan || orbit;
@@ -154,6 +210,11 @@ bool EditorNavigationUpdate(EditorNavigation *navigation, Camera3D *camera, floa
     return freeLook;
 }
 
+bool EditorNavigationIsOrthographic(const EditorNavigation *navigation)
+{
+    return navigation->orthographic;
+}
+
 const char *EditorNavigationModeName(const EditorNavigation *navigation)
 {
     return navigation->mode == EDITOR_NAVIGATION_ORBIT ? "orbit" : "free";
@@ -171,4 +232,11 @@ const char *EditorNavigationFreeHint(const EditorNavigation *navigation)
     return navigation->profile == EDITOR_NAVIGATION_MACOS ?
         "Free: RMB or Option+LMB + WASD/QE" :
         "Free: RMB or Alt+LMB + WASD/QE";
+}
+
+const char *EditorNavigationViewHint(const EditorNavigation *navigation)
+{
+    return navigation->profile == EDITOR_NAVIGATION_MACOS ?
+        "Ortho: Ctrl+Shift+1 front, 3 right, 7 top" :
+        "Ortho: NumPad 1 front, 3 right, 7 top";
 }
