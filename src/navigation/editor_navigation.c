@@ -42,6 +42,32 @@ static void SyncOrbitCamera(const EditorNavigation *navigation, Camera3D *camera
     camera->target = navigation->orbitTarget;
 }
 
+static Vector3 LerpVector3(Vector3 a, Vector3 b, float amount)
+{
+    return (Vector3){ Lerp(a.x, b.x, amount), Lerp(a.y, b.y, amount), Lerp(a.z, b.z, amount) };
+}
+
+static bool UpdateCameraTransition(EditorNavigation *navigation, Camera3D *camera, float deltaTime)
+{
+    if (!navigation->transitionActive) return false;
+    navigation->transitionElapsed += deltaTime;
+    float t = navigation->transitionElapsed / navigation->transitionDuration;
+    if (t > 1.0f) t = 1.0f;
+    float smooth = t * t * (3.0f - 2.0f * t);
+    camera->position = LerpVector3(navigation->transitionStartPosition, navigation->transitionTargetPosition, smooth);
+    camera->target = LerpVector3(navigation->transitionStartTarget, navigation->orbitTarget, smooth);
+    camera->up = Vector3Normalize(LerpVector3(navigation->transitionStartUp, navigation->transitionTargetUp, smooth));
+    camera->fovy = Lerp(navigation->transitionStartFovy, navigation->transitionTargetFovy, smooth);
+    if (t >= 1.0f) {
+        camera->position = navigation->transitionTargetPosition;
+        camera->target = navigation->orbitTarget;
+        camera->up = navigation->transitionTargetUp;
+        camera->fovy = navigation->transitionTargetFovy;
+        navigation->transitionActive = false;
+    }
+    return true;
+}
+
 static bool IsNavigationButtonDown(void)
 {
     /* MMB is the exact Blender binding for a mouse. RMB is the practical touchpad equivalent. */
@@ -87,6 +113,8 @@ void EditorNavigationInit(EditorNavigation *navigation, const Camera3D *camera)
 
 void EditorNavigationToggleMode(EditorNavigation *navigation, Camera3D *camera)
 {
+    navigation->transitionActive = false;
+    navigation->hasLastView = false;
     Vector3 forward = Vector3Normalize(Vector3Subtract(camera->target, camera->position));
     if (navigation->mode == EDITOR_NAVIGATION_ORBIT) {
         if (navigation->orthographic) {
@@ -107,25 +135,39 @@ void EditorNavigationToggleMode(EditorNavigation *navigation, Camera3D *camera)
 
 static void SnapToView(EditorNavigation *navigation, Camera3D *camera, EditorNavigationView view)
 {
-    Vector3 offset = { 0.0f, 0.0f, navigation->orbitDistance };
-    camera->up = (Vector3){ 0.0f, 1.0f, 0.0f };
-    if (view == EDITOR_VIEW_RIGHT) offset = (Vector3){ navigation->orbitDistance, 0.0f, 0.0f };
+    bool flip = navigation->hasLastView && navigation->orthographic && navigation->lastView == view;
+    float distance = navigation->orbitDistance;
+    Vector3 offset = { 0.0f, 0.0f, flip ? -distance : distance };
+    Vector3 targetUp = { 0.0f, 1.0f, 0.0f };
+    if (view == EDITOR_VIEW_RIGHT) offset = (Vector3){ flip ? -distance : distance, 0.0f, 0.0f };
     if (view == EDITOR_VIEW_TOP) {
-        offset = (Vector3){ 0.0f, navigation->orbitDistance, 0.0f };
-        camera->up = (Vector3){ 0.0f, 0.0f, -1.0f };
+        offset = (Vector3){ 0.0f, flip ? -distance : distance, 0.0f };
+        targetUp = (Vector3){ 0.0f, 0.0f, -1.0f };
     }
+    Vector3 targetPosition = Vector3Add(camera->target, offset);
     navigation->mode = EDITOR_NAVIGATION_ORBIT;
     navigation->orthographic = true;
     navigation->orbitTarget = camera->target;
     SetAnglesFromDirection(navigation, offset);
+    navigation->hasLastView = true;
+    navigation->lastView = view;
+    navigation->lastViewFlipped = flip;
+    navigation->transitionActive = true;
+    navigation->transitionElapsed = 0.0f;
+    navigation->transitionDuration = 0.16f;
+    navigation->transitionStartPosition = camera->position;
+    navigation->transitionStartTarget = camera->target;
+    navigation->transitionStartUp = camera->up;
+    navigation->transitionStartFovy = camera->fovy;
+    navigation->transitionTargetPosition = targetPosition;
+    navigation->transitionTargetUp = targetUp;
+    navigation->transitionTargetFovy = fmaxf(8.0f, navigation->orbitDistance * 0.75f);
     camera->projection = CAMERA_ORTHOGRAPHIC;
-    camera->fovy = fmaxf(8.0f, navigation->orbitDistance * 0.75f);
-    SyncOrbitCamera(navigation, camera);
 }
 
 bool EditorNavigationHandleViewShortcuts(EditorNavigation *navigation, Camera3D *camera)
 {
-    if (!ControlHeld() || !ShiftHeld()) return false;
+    if (!ControlHeld()) return false;
     if (IsKeyPressed(KEY_ONE)) { SnapToView(navigation, camera, EDITOR_VIEW_FRONT); return true; }
     if (IsKeyPressed(KEY_THREE)) { SnapToView(navigation, camera, EDITOR_VIEW_RIGHT); return true; }
     if (IsKeyPressed(KEY_SEVEN)) { SnapToView(navigation, camera, EDITOR_VIEW_TOP); return true; }
@@ -134,6 +176,7 @@ bool EditorNavigationHandleViewShortcuts(EditorNavigation *navigation, Camera3D 
 
 bool EditorNavigationUpdate(EditorNavigation *navigation, Camera3D *camera, float deltaTime)
 {
+    if (UpdateCameraTransition(navigation, camera, deltaTime)) return true;
     float wheel = GetMouseWheelMove();
     if (navigation->mode == EDITOR_NAVIGATION_ORBIT) {
         bool pan = IsPanGesture();
@@ -151,6 +194,7 @@ bool EditorNavigationUpdate(EditorNavigation *navigation, Camera3D *camera, floa
             } else if (orbit) {
                 if (navigation->orthographic && Vector2Length(mouseDelta) > 0.01f) {
                     navigation->orthographic = false;
+                    navigation->hasLastView = false;
                     camera->projection = CAMERA_PERSPECTIVE;
                     camera->fovy = 50.0f;
                     camera->up = (Vector3){ 0.0f, 1.0f, 0.0f };
@@ -239,5 +283,5 @@ const char *EditorNavigationFreeHint(const EditorNavigation *navigation)
 const char *EditorNavigationViewHint(const EditorNavigation *navigation)
 {
     (void)navigation;
-    return "Ortho: Ctrl+Shift+1 front, 3 right, 7 top";
+    return "Ortho: Ctrl+1 front/back, 3 right/left, 7 top/bottom";
 }

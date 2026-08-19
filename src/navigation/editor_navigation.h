@@ -28,6 +28,19 @@ typedef struct EditorNavigation {
     float pitch;
     float orbitDistance;
     bool orthographic;
+    bool hasLastView;
+    EditorNavigationView lastView;
+    bool lastViewFlipped;
+    bool transitionActive;
+    float transitionElapsed;
+    float transitionDuration;
+    Vector3 transitionStartPosition;
+    Vector3 transitionStartTarget;
+    Vector3 transitionStartUp;
+    float transitionStartFovy;
+    Vector3 transitionTargetPosition;
+    Vector3 transitionTargetUp;
+    float transitionTargetFovy;
 } EditorNavigation;
 
 void EditorNavigationInit(EditorNavigation *navigation, const Camera3D *camera);
