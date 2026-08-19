@@ -9,6 +9,21 @@
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "Slimeworks Level Editor: rebuild before launch",
             "MIMode": "lldb"
+        },
+        {
+            "name": "Start editor from src/main.c",
+            "type": "cppdbg",
+            "request": "launch",
+            "program": "${workspaceFolder}/main",
+            "cwd": "${workspaceFolder}",
+            "preLaunchTask": "Slimeworks Level Editor: rebuild before launch",
+            "stopAtEntry": false,
+            "externalConsole": false,
+            "MIMode": "lldb",
+            "presentation": {
+                "group": "slimeworks-editor",
+                "order": 1
+            }
         }
     ]
 }
