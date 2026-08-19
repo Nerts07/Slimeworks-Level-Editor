@@ -128,3 +128,127 @@ bool ModelImportAdd(LevlDocument *document, const char *sourcePath, char *messag
     SetMessage(message, messageSize, isFbx ? "FBX converted to GLB and added" : "Model copied into assets and added");
     return true;
 }
+
+static bool WriteMtl(const Model *model, const char *baseName, char *message, int messageSize)
+{
+    char mtlPath[LEVL_PATH_LENGTH];
+    snprintf(mtlPath, sizeof(mtlPath), "assets/%s.mtl", baseName);
+    FILE *file = fopen(mtlPath, "w");
+    if (!file) { SetMessage(message, messageSize, "Could not write baked material file"); return false; }
+    for (int materialIndex = 0; materialIndex < model->materialCount; ++materialIndex) {
+        const Material *material = &model->materials[materialIndex];
+        Color color = material->maps[MATERIAL_MAP_ALBEDO].color;
+        fprintf(file, "newmtl material_%d\nKd %.4f %.4f %.4f\n", materialIndex,
+                color.r / 255.0f, color.g / 255.0f, color.b / 255.0f);
+        Texture2D texture = material->maps[MATERIAL_MAP_ALBEDO].texture;
+        if (texture.id != 0) {
+            char textureName[LEVL_NAME_LENGTH + 32], texturePath[LEVL_PATH_LENGTH];
+            snprintf(textureName, sizeof(textureName), "%s_%d.png", baseName, materialIndex);
+            snprintf(texturePath, sizeof(texturePath), "assets/%s", textureName);
+            Image image = LoadImageFromTexture(texture);
+            if (!image.data || !ExportImage(image, texturePath)) {
+                if (image.data) UnloadImage(image);
+                fclose(file);
+                SetMessage(message, messageSize, "Could not export a model texture while applying scale");
+                return false;
+            }
+            UnloadImage(image);
+            fprintf(file, "map_Kd %s\n", textureName);
+        }
+        fprintf(file, "\n");
+    }
+    fclose(file);
+    return true;
+}
+
+static void WriteFaceVertex(FILE *file, int vertexIndex, int vertexOffset, int texcoordOffset, int normalOffset,
+                            bool hasTexcoords, bool hasNormals)
+{
+    int index = vertexIndex + vertexOffset;
+    if (hasTexcoords && hasNormals) fprintf(file, "%d/%d/%d", index, vertexIndex + texcoordOffset, vertexIndex + normalOffset);
+    else if (hasTexcoords) fprintf(file, "%d/%d", index, vertexIndex + texcoordOffset);
+    else if (hasNormals) fprintf(file, "%d//%d", index, vertexIndex + normalOffset);
+    else fprintf(file, "%d", index);
+}
+
+bool ModelImportApplyScale(LevlObject *object, const Model *model, char *message, int messageSize)
+{
+    if (!object || object->type != LEVL_OBJECT_MODEL || !model || !IsModelValid(*model)) {
+        SetMessage(message, messageSize, "Apply Scale is available for a loaded model only");
+        return false;
+    }
+    Vector3 scale = object->data.model.scale;
+    if (fabsf(scale.x - 1.0f) < 0.0001f && fabsf(scale.y - 1.0f) < 0.0001f && fabsf(scale.z - 1.0f) < 0.0001f) {
+        SetMessage(message, messageSize, "Scale is already applied");
+        return true;
+    }
+    if (MakeDirectory("assets") != 0 && !DirectoryExists("assets")) {
+        SetMessage(message, messageSize, "Could not create assets directory");
+        return false;
+    }
+
+    char baseName[LEVL_NAME_LENGTH + 16], objPath[LEVL_PATH_LENGTH];
+    snprintf(baseName, sizeof(baseName), "%s_applied", object->name);
+    snprintf(objPath, sizeof(objPath), "assets/%s.obj", baseName);
+    if (!WriteMtl(model, baseName, message, messageSize)) return false;
+
+    FILE *file = fopen(objPath, "w");
+    if (!file) { SetMessage(message, messageSize, "Could not write baked OBJ model"); return false; }
+    fprintf(file, "# Scale baked by Slimeworks Level Editor\nmtllib %s.mtl\n", baseName);
+    for (int meshIndex = 0; meshIndex < model->meshCount; ++meshIndex) {
+        const Mesh *mesh = &model->meshes[meshIndex];
+        if (!mesh->vertices) { fclose(file); SetMessage(message, messageSize, "Model mesh has no editable vertex data"); return false; }
+        for (int vertex = 0; vertex < mesh->vertexCount; ++vertex) {
+            const float *v = &mesh->vertices[vertex * 3];
+            fprintf(file, "v %.8f %.8f %.8f\n", v[0] * scale.x, v[1] * scale.y, v[2] * scale.z);
+        }
+    }
+    for (int meshIndex = 0; meshIndex < model->meshCount; ++meshIndex) {
+        const Mesh *mesh = &model->meshes[meshIndex];
+        if (!mesh->texcoords) continue;
+        for (int vertex = 0; vertex < mesh->vertexCount; ++vertex) {
+            const float *uv = &mesh->texcoords[vertex * 2];
+            fprintf(file, "vt %.8f %.8f\n", uv[0], uv[1]);
+        }
+    }
+    for (int meshIndex = 0; meshIndex < model->meshCount; ++meshIndex) {
+        const Mesh *mesh = &model->meshes[meshIndex];
+        if (!mesh->normals) continue;
+        for (int vertex = 0; vertex < mesh->vertexCount; ++vertex) {
+            const float *n = &mesh->normals[vertex * 3];
+            Vector3 normal = { n[0] / scale.x, n[1] / scale.y, n[2] / scale.z };
+            float length = sqrtf(normal.x * normal.x + normal.y * normal.y + normal.z * normal.z);
+            if (length > 0.00001f) { normal.x /= length; normal.y /= length; normal.z /= length; }
+            fprintf(file, "vn %.8f %.8f %.8f\n", normal.x, normal.y, normal.z);
+        }
+    }
+
+    int vertexOffset = 1, texcoordOffset = 1, normalOffset = 1;
+    for (int meshIndex = 0; meshIndex < model->meshCount; ++meshIndex) {
+        const Mesh *mesh = &model->meshes[meshIndex];
+        int materialIndex = model->meshMaterial ? model->meshMaterial[meshIndex] : 0;
+        fprintf(file, "g mesh_%d\nusemtl material_%d\n", meshIndex, materialIndex);
+        bool hasTexcoords = mesh->texcoords != NULL, hasNormals = mesh->normals != NULL;
+        for (int triangle = 0; triangle < mesh->triangleCount; ++triangle) {
+            int indices[3];
+            for (int corner = 0; corner < 3; ++corner) indices[corner] = mesh->indices ? mesh->indices[triangle * 3 + corner] : triangle * 3 + corner;
+            fprintf(file, "f ");
+            for (int corner = 0; corner < 3; ++corner) {
+                WriteFaceVertex(file, indices[corner], vertexOffset, texcoordOffset, normalOffset, hasTexcoords, hasNormals);
+                fputc(corner == 2 ? '\n' : ' ', file);
+            }
+        }
+        vertexOffset += mesh->vertexCount;
+        if (hasTexcoords) texcoordOffset += mesh->vertexCount;
+        if (hasNormals) normalOffset += mesh->vertexCount;
+    }
+    fclose(file);
+
+    snprintf(object->data.model.assetPath, sizeof(object->data.model.assetPath), "%s", objPath);
+    object->data.model.collisionSize.x *= scale.x;
+    object->data.model.collisionSize.y *= scale.y;
+    object->data.model.collisionSize.z *= scale.z;
+    object->data.model.scale = (Vector3){ 1.0f, 1.0f, 1.0f };
+    SetMessage(message, messageSize, "Scale baked into assets/<model>_applied.obj");
+    return true;
+}

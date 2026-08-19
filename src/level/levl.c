@@ -325,25 +325,28 @@ bool LevlDocumentExportToGame(const LevlDocument *document, const char *gameLeve
     }
     if (!WriteDocument(document, gameLevelPath, message, messageSize)) return false;
 
-    char sourceDirectory[LEVL_PATH_LENGTH];
+    char sourceDirectory[LEVL_PATH_LENGTH], sourceAssets[512], destinationAssets[512];
     GetDirectory(document->filePath, sourceDirectory, sizeof(sourceDirectory));
-    for (int i = 0; i < document->objectCount; ++i) {
-        const LevlObject *object = &document->objects[i];
-        if (object->type != LEVL_OBJECT_MODEL) continue;
-        const char *asset = object->data.model.assetPath;
-        char sourcePath[512], destinationPath[512], destinationAssets[512];
-        snprintf(sourcePath, sizeof(sourcePath), "%s/%s", sourceDirectory, asset);
-        if (!FileExists(sourcePath)) snprintf(sourcePath, sizeof(sourcePath), "%s", asset);
-        snprintf(destinationPath, sizeof(destinationPath), "%s/%s", gameDirectory, asset);
-        snprintf(destinationAssets, sizeof(destinationAssets), "%s/assets", gameDirectory);
+    snprintf(sourceAssets, sizeof(sourceAssets), "%s/assets", sourceDirectory);
+    if (!DirectoryExists(sourceAssets)) snprintf(sourceAssets, sizeof(sourceAssets), "assets");
+    snprintf(destinationAssets, sizeof(destinationAssets), "%s/assets", gameDirectory);
+    if (DirectoryExists(sourceAssets)) {
         if (MakeDirectory(destinationAssets) != 0 && !DirectoryExists(destinationAssets)) {
             SetMessage(message, messageSize, "Could not create game's assets directory");
             return false;
         }
-        if (!CopyFileContents(sourcePath, destinationPath)) {
-            SetMessage(message, messageSize, "Could not copy a model asset to game");
-            return false;
+        FilePathList assets = LoadDirectoryFiles(sourceAssets);
+        for (unsigned int i = 0; i < assets.count; ++i) {
+            if (!FileExists(assets.paths[i])) continue;
+            char destinationPath[512];
+            snprintf(destinationPath, sizeof(destinationPath), "%s/%s", destinationAssets, GetFileName(assets.paths[i]));
+            if (!CopyFileContents(assets.paths[i], destinationPath)) {
+                UnloadDirectoryFiles(assets);
+                SetMessage(message, messageSize, "Could not copy an asset to game");
+                return false;
+            }
         }
+        UnloadDirectoryFiles(assets);
     }
     SetMessage(message, messageSize, "Exported to Slimeworks Factory/levels/factory.levl");
     return true;

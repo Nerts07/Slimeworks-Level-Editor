@@ -27,6 +27,27 @@ static LevlObject *SelectedObject(Editor *editor)
     return &editor->document.objects[editor->selectedIndex];
 }
 
+static bool ShiftHeld(void)
+{
+    return IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
+}
+
+static bool CommandOrControlHeld(void)
+{
+    return IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL) ||
+           IsKeyDown(KEY_LEFT_SUPER) || IsKeyDown(KEY_RIGHT_SUPER);
+}
+
+static float SnapValue(float value, float step)
+{
+    return roundf(value / step) * step;
+}
+
+static Vector3 SnapVector(Vector3 value, float step)
+{
+    return (Vector3){ SnapValue(value.x, step), SnapValue(value.y, step), SnapValue(value.z, step) };
+}
+
 static float ClampMin(float value, float minimum)
 {
     return value < minimum ? minimum : value;
@@ -57,6 +78,7 @@ static Vector3 DefaultCreatePosition(const Editor *editor)
     position.x = roundf(position.x * 2.0f) * 0.5f;
     position.y = 0.0f;
     position.z = roundf(position.z * 2.0f) * 0.5f;
+    if (editor->snapEnabled) position = SnapVector(position, editor->gridStep);
     return position;
 }
 
@@ -96,6 +118,11 @@ static void MoveSelected(Editor *editor, Vector3 delta)
     if (object->type == LEVL_OBJECT_PLATFORM && fabsf(delta.y) > 0.001f) {
         object->data.platform.top += delta.y;
         object->position.y = 0.0f;
+    }
+    if (editor->snapEnabled) {
+        object->position = SnapVector(object->position, editor->gridStep);
+        if (object->type == LEVL_OBJECT_RAMP) object->data.ramp.end = SnapVector(object->data.ramp.end, editor->gridStep);
+        if (object->type == LEVL_OBJECT_PLATFORM) object->data.platform.top = SnapValue(object->data.platform.top, editor->gridStep);
     }
     editor->document.dirty = true;
 }
@@ -205,13 +232,298 @@ static void ToggleCollision(Editor *editor)
     SetStatus(editor, "Collider toggled");
 }
 
-static void UpdateEditorControls(Editor *editor)
+static Vector3 CameraDirection(float yaw, float pitch)
 {
-    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) UpdateCamera(&editor->camera, CAMERA_FREE);
-    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) SelectAtMouse(editor);
+    return Vector3Normalize((Vector3){ sinf(yaw) * cosf(pitch), sinf(pitch), cosf(yaw) * cosf(pitch) });
+}
+
+static void SyncOrbitCamera(Editor *editor)
+{
+    Vector3 offset = {
+        sinf(editor->orbitYaw) * cosf(editor->orbitPitch) * editor->orbitDistance,
+        sinf(editor->orbitPitch) * editor->orbitDistance,
+        cosf(editor->orbitYaw) * cosf(editor->orbitPitch) * editor->orbitDistance
+    };
+    editor->camera.position = Vector3Add(editor->orbitTarget, offset);
+    editor->camera.target = editor->orbitTarget;
+}
+
+static void SetCameraAnglesFromDirection(Editor *editor, Vector3 direction)
+{
+    direction = Vector3Normalize(direction);
+    editor->orbitYaw = atan2f(direction.x, direction.z);
+    editor->orbitPitch = asinf(direction.y);
+}
+
+static void ToggleCameraMode(Editor *editor)
+{
+    Vector3 direction = Vector3Normalize(Vector3Subtract(editor->camera.target, editor->camera.position));
+    SetCameraAnglesFromDirection(editor, direction);
+    if (editor->cameraMode == EDITOR_CAMERA_ORBIT) {
+        editor->cameraMode = EDITOR_CAMERA_FREE;
+        SetStatus(editor, "Free camera mode — hold RMB, then fly with WASD");
+    } else {
+        editor->cameraMode = EDITOR_CAMERA_ORBIT;
+        editor->orbitTarget = Vector3Add(editor->camera.position, Vector3Scale(direction, editor->orbitDistance));
+        SetCameraAnglesFromDirection(editor, Vector3Scale(direction, -1.0f));
+        SyncOrbitCamera(editor);
+        SetStatus(editor, "Orbit camera mode — Blender MMB controls restored");
+    }
+}
+
+static void UpdateCameraController(Editor *editor, float deltaTime)
+{
+    float wheel = GetMouseWheelMove();
+    if (editor->cameraMode == EDITOR_CAMERA_ORBIT) {
+        if (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE)) {
+            Vector2 mouseDelta = GetMouseDelta();
+            if (ShiftHeld()) {
+                Vector3 forward = Vector3Normalize(Vector3Subtract(editor->camera.target, editor->camera.position));
+                Vector3 right = Vector3Normalize(Vector3CrossProduct(forward, editor->camera.up));
+                Vector3 up = Vector3Normalize(Vector3CrossProduct(right, forward));
+                float panSpeed = editor->orbitDistance * 0.0018f;
+                editor->orbitTarget = Vector3Add(editor->orbitTarget, Vector3Scale(right, -mouseDelta.x * panSpeed));
+                editor->orbitTarget = Vector3Add(editor->orbitTarget, Vector3Scale(up, mouseDelta.y * panSpeed));
+            } else {
+                editor->orbitYaw -= mouseDelta.x * 0.008f;
+                editor->orbitPitch += mouseDelta.y * 0.008f;
+                if (editor->orbitPitch > 1.48f) editor->orbitPitch = 1.48f;
+                if (editor->orbitPitch < -1.48f) editor->orbitPitch = -1.48f;
+            }
+        }
+        if (fabsf(wheel) > 0.001f) {
+            editor->orbitDistance *= powf(0.84f, wheel);
+            if (editor->orbitDistance < 1.5f) editor->orbitDistance = 1.5f;
+            if (editor->orbitDistance > 250.0f) editor->orbitDistance = 250.0f;
+        }
+        SyncOrbitCamera(editor);
+        return;
+    }
+
+    Vector3 direction = CameraDirection(editor->orbitYaw, editor->orbitPitch);
+    if (IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        Vector2 mouseDelta = GetMouseDelta();
+        editor->orbitYaw -= mouseDelta.x * 0.008f;
+        editor->orbitPitch += mouseDelta.y * 0.008f;
+        if (editor->orbitPitch > 1.48f) editor->orbitPitch = 1.48f;
+        if (editor->orbitPitch < -1.48f) editor->orbitPitch = -1.48f;
+        direction = CameraDirection(editor->orbitYaw, editor->orbitPitch);
+        Vector3 flatForward = Vector3Normalize((Vector3){ direction.x, 0.0f, direction.z });
+        Vector3 right = Vector3Normalize(Vector3CrossProduct(flatForward, editor->camera.up));
+        float speed = ShiftHeld() ? 16.0f : 7.0f;
+        Vector3 movement = { 0 };
+        if (IsKeyDown(KEY_W)) movement = Vector3Add(movement, flatForward);
+        if (IsKeyDown(KEY_S)) movement = Vector3Subtract(movement, flatForward);
+        if (IsKeyDown(KEY_D)) movement = Vector3Add(movement, right);
+        if (IsKeyDown(KEY_A)) movement = Vector3Subtract(movement, right);
+        if (IsKeyDown(KEY_E)) movement.y += 1.0f;
+        if (IsKeyDown(KEY_Q)) movement.y -= 1.0f;
+        if (Vector3Length(movement) > 0.001f) editor->camera.position = Vector3Add(editor->camera.position,
+            Vector3Scale(Vector3Normalize(movement), speed * deltaTime));
+    }
+    if (fabsf(wheel) > 0.001f) editor->camera.position = Vector3Add(editor->camera.position, Vector3Scale(direction, wheel * 1.6f));
+    editor->camera.target = Vector3Add(editor->camera.position, direction);
+}
+
+static Vector3 GizmoOrigin(const LevlObject *object)
+{
+    if (object->type == LEVL_OBJECT_PLATFORM) return (Vector3){ object->position.x, object->data.platform.top, object->position.z };
+    return object->position;
+}
+
+static float GizmoSize(const LevlObject *object)
+{
+    BoundingBox bounds = LevlObjectGetBounds(object);
+    float sizeX = bounds.max.x - bounds.min.x, sizeY = bounds.max.y - bounds.min.y, sizeZ = bounds.max.z - bounds.min.z;
+    float largest = fmaxf(sizeX, fmaxf(sizeY, sizeZ));
+    return fmaxf(1.25f, fminf(largest * 0.65f, 4.0f));
+}
+
+static float DistanceToSegment(Vector2 point, Vector2 a, Vector2 b)
+{
+    Vector2 delta = Vector2Subtract(b, a);
+    float lengthSquared = Vector2DotProduct(delta, delta);
+    if (lengthSquared < 0.0001f) return Vector2Distance(point, a);
+    float t = Vector2DotProduct(Vector2Subtract(point, a), delta) / lengthSquared;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return Vector2Distance(point, Vector2Add(a, Vector2Scale(delta, t)));
+}
+
+static int PickGizmoAxis(const Editor *editor, const LevlObject *object, Vector2 mouse)
+{
+    Vector3 origin = GizmoOrigin(object);
+    float size = GizmoSize(object);
+    Vector2 center = GetWorldToScreen(origin, editor->camera);
+    float bestDistance = 14.0f;
+    int result = -1;
+    if (editor->gizmoMode != EDITOR_GIZMO_ROTATE) {
+        const Vector3 axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+        for (int axis = 0; axis < 3; ++axis) {
+            Vector2 end = GetWorldToScreen(Vector3Add(origin, Vector3Scale(axes[axis], size)), editor->camera);
+            float distance = DistanceToSegment(mouse, center, end);
+            if (distance < bestDistance) { bestDistance = distance; result = axis; }
+        }
+        return result;
+    }
+
+    for (int axis = 0; axis < 3; ++axis) {
+        Vector2 previous = { 0 };
+        bool hasPrevious = false;
+        for (int segment = 0; segment <= 48; ++segment) {
+            float angle = (float)segment / 48.0f * 2.0f * PI;
+            Vector3 local = axis == 0 ? (Vector3){ 0, cosf(angle) * size, sinf(angle) * size } :
+                            (axis == 1 ? (Vector3){ cosf(angle) * size, 0, sinf(angle) * size } :
+                                         (Vector3){ cosf(angle) * size, sinf(angle) * size, 0 });
+            Vector2 current = GetWorldToScreen(Vector3Add(origin, local), editor->camera);
+            if (hasPrevious) {
+                float distance = DistanceToSegment(mouse, previous, current);
+                if (distance < bestDistance) { bestDistance = distance; result = axis; }
+            }
+            previous = current;
+            hasPrevious = true;
+        }
+    }
+    return result;
+}
+
+static void BeginGizmoDrag(Editor *editor, int axis)
+{
+    LevlObject *object = SelectedObject(editor);
+    if (!object || axis < 0) return;
+    EditorGizmoDrag *drag = &editor->gizmoDrag;
+    *drag = (EditorGizmoDrag){ .active = true, .axis = axis, .startMouse = GetMousePosition(),
+        .startPosition = object->position, .startBoxSize = object->type == LEVL_OBJECT_BOX ? object->data.box.size : (Vector3){ 1, 1, 1 },
+        .startRotation = object->type == LEVL_OBJECT_BOX ? object->data.box.rotation :
+                         (object->type == LEVL_OBJECT_MODEL ? object->data.model.rotation : (Vector3){ 0 }),
+        .startModelScale = object->type == LEVL_OBJECT_MODEL ? object->data.model.scale : (Vector3){ 1, 1, 1 },
+        .startPlatformSize = object->type == LEVL_OBJECT_PLATFORM ? object->data.platform.size : (Vector2){ 1, 1 },
+        .startRampEnd = object->type == LEVL_OBJECT_RAMP ? object->data.ramp.end : (Vector3){ 0 },
+        .startPlatformTop = object->type == LEVL_OBJECT_PLATFORM ? object->data.platform.top : 0.0f,
+        .startRampWidth = object->type == LEVL_OBJECT_RAMP ? object->data.ramp.width : 1.0f };
+    Vector2 center = GetWorldToScreen(GizmoOrigin(object), editor->camera);
+    drag->startAngle = atan2f(drag->startMouse.y - center.y, drag->startMouse.x - center.x);
+}
+
+static void ApplyGizmoPosition(Editor *editor, LevlObject *object, Vector3 position)
+{
+    Vector3 delta = Vector3Subtract(position, editor->gizmoDrag.startPosition);
+    object->position = position;
+    if (object->type == LEVL_OBJECT_RAMP) object->data.ramp.end = Vector3Add(editor->gizmoDrag.startRampEnd, delta);
+    if (object->type == LEVL_OBJECT_PLATFORM) {
+        object->data.platform.top = editor->gizmoDrag.startPlatformTop + delta.y;
+        object->position.y = 0.0f;
+    }
+}
+
+static void UpdateGizmoDrag(Editor *editor)
+{
+    if (!editor->gizmoDrag.active) return;
+    if (!IsMouseButtonDown(MOUSE_BUTTON_LEFT)) { editor->gizmoDrag.active = false; return; }
+    LevlObject *object = SelectedObject(editor);
+    if (!object) { editor->gizmoDrag.active = false; return; }
+    const Vector3 axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    int axis = editor->gizmoDrag.axis;
+    float gizmoSize = GizmoSize(object);
+    Vector3 origin = GizmoOrigin(object);
+    Vector2 center = GetWorldToScreen(origin, editor->camera);
+
+    if (editor->gizmoMode == EDITOR_GIZMO_ROTATE) {
+        Vector2 mouse = GetMousePosition();
+        float angle = (atan2f(mouse.y - center.y, mouse.x - center.x) - editor->gizmoDrag.startAngle) * RAD2DEG;
+        if (editor->snapEnabled) angle = SnapValue(angle, 15.0f);
+        if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation = editor->gizmoDrag.startRotation;
+        if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation = editor->gizmoDrag.startRotation;
+        if (object->type == LEVL_OBJECT_BOX) ((float *)&object->data.box.rotation)[axis] += angle;
+        if (object->type == LEVL_OBJECT_MODEL) ((float *)&object->data.model.rotation)[axis] += angle;
+        editor->document.dirty = true;
+        return;
+    }
+
+    Vector2 screenEnd = GetWorldToScreen(Vector3Add(origin, Vector3Scale(axes[axis], gizmoSize)), editor->camera);
+    Vector2 screenAxis = Vector2Subtract(screenEnd, center);
+    float length = Vector2Length(screenAxis);
+    if (length < 2.0f) return;
+    float pixelsAlongAxis = Vector2DotProduct(Vector2Subtract(GetMousePosition(), editor->gizmoDrag.startMouse), Vector2Scale(screenAxis, 1.0f / length));
+    float worldAmount = pixelsAlongAxis / length * gizmoSize;
+    if (editor->gizmoMode == EDITOR_GIZMO_MOVE) {
+        Vector3 position = Vector3Add(editor->gizmoDrag.startPosition, Vector3Scale(axes[axis], worldAmount));
+        if (editor->snapEnabled) position = SnapVector(position, editor->gridStep);
+        ApplyGizmoPosition(editor, object, position);
+    } else {
+        float factor = fmaxf(0.05f, 1.0f + worldAmount / gizmoSize);
+        if (object->type == LEVL_OBJECT_BOX) {
+            object->data.box.size = editor->gizmoDrag.startBoxSize;
+            ((float *)&object->data.box.size)[axis] = ClampMin(((float *)&editor->gizmoDrag.startBoxSize)[axis] * factor, 0.1f);
+            if (editor->snapEnabled) ((float *)&object->data.box.size)[axis] = ClampMin(SnapValue(((float *)&object->data.box.size)[axis], editor->gridStep), editor->gridStep);
+        } else if (object->type == LEVL_OBJECT_MODEL) {
+            object->data.model.scale = editor->gizmoDrag.startModelScale;
+            ((float *)&object->data.model.scale)[axis] = ClampMin(((float *)&editor->gizmoDrag.startModelScale)[axis] * factor, 0.05f);
+        } else if (object->type == LEVL_OBJECT_PLATFORM && axis != 1) {
+            object->data.platform.size = editor->gizmoDrag.startPlatformSize;
+            float *component = axis == 0 ? &object->data.platform.size.x : &object->data.platform.size.y;
+            float start = axis == 0 ? editor->gizmoDrag.startPlatformSize.x : editor->gizmoDrag.startPlatformSize.y;
+            *component = ClampMin(start * factor, editor->snapEnabled ? editor->gridStep : 0.25f);
+            if (editor->snapEnabled) *component = ClampMin(SnapValue(*component, editor->gridStep), editor->gridStep);
+        } else if (object->type == LEVL_OBJECT_RAMP) object->data.ramp.width = ClampMin(editor->gizmoDrag.startRampWidth * factor, 0.25f);
+    }
+    editor->document.dirty = true;
+}
+
+static void ApplySelectedScale(Editor *editor)
+{
+    LevlObject *object = SelectedObject(editor);
+    if (!object) return;
+    if (object->type != LEVL_OBJECT_MODEL) {
+        SetStatus(editor, "Primitive dimensions are already applied; use them directly for texture-safe geometry");
+        return;
+    }
+    Model *model = EditorSceneGetModel(editor->modelCache, LEVL_MAX_OBJECTS, object);
+    char result[192];
+    if (ModelImportApplyScale(object, model, result, (int)sizeof(result))) {
+        EditorSceneInvalidateModel(editor->modelCache, LEVL_MAX_OBJECTS, object->id);
+        editor->document.dirty = true;
+    }
+    SetStatus(editor, result);
+}
+
+static void AdjustGridStep(Editor *editor, int direction)
+{
+    static const float steps[] = { 0.125f, 0.25f, 0.5f, 1.0f, 2.0f, 4.0f };
+    int index = 0;
+    for (int i = 0; i < (int)(sizeof(steps) / sizeof(steps[0])); ++i) {
+        if (fabsf(steps[i] - editor->gridStep) < 0.01f) { index = i; break; }
+    }
+    index += direction;
+    if (index < 0) index = 0;
+    if (index >= (int)(sizeof(steps) / sizeof(steps[0]))) index = (int)(sizeof(steps) / sizeof(steps[0])) - 1;
+    editor->gridStep = steps[index];
+    SetStatus(editor, TextFormat("Grid step: %.3g", editor->gridStep));
+}
+
+static void SetGizmoMode(Editor *editor, EditorGizmoMode mode)
+{
+    editor->gizmoMode = mode;
+    editor->gizmoHighlightedAxis = -1;
+    SetStatus(editor, mode == EDITOR_GIZMO_MOVE ? "Move gizmo — drag a coloured axis" :
+                      (mode == EDITOR_GIZMO_ROTATE ? "Rotate gizmo — drag a coloured ring" : "Scale gizmo — drag a coloured axis"));
+}
+
+static void UpdateEditorControls(Editor *editor, float deltaTime)
+{
+    UpdateCameraController(editor, deltaTime);
+    if (editor->cameraMode == EDITOR_CAMERA_FREE && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) return;
+
+    if (editor->gizmoDrag.active) { UpdateGizmoDrag(editor); return; }
+    LevlObject *object = SelectedObject(editor);
+    editor->gizmoHighlightedAxis = object ? PickGizmoAxis(editor, object, GetMousePosition()) : -1;
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (editor->gizmoHighlightedAxis >= 0) BeginGizmoDrag(editor, editor->gizmoHighlightedAxis);
+        else SelectAtMouse(editor);
+    }
     if (IsKeyPressed(KEY_TAB)) SelectNext(editor);
 
-    if (IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL)) {
+    if (CommandOrControlHeld()) {
         if (IsKeyPressed(KEY_S)) {
             char result[192]; LevlDocumentSave(&editor->document, "level.levl", result, (int)sizeof(result)); SetStatus(editor, result);
         }
@@ -224,8 +536,14 @@ static void UpdateEditorControls(Editor *editor)
             }
             SetStatus(editor, result);
         }
+        if (IsKeyPressed(KEY_A)) ApplySelectedScale(editor);
         return;
     }
+
+    if (ShiftHeld() && IsKeyPressed(KEY_RIGHT_BRACKET)) { ToggleCameraMode(editor); return; }
+    if (ShiftHeld() && IsKeyPressed(KEY_S)) { editor->snapEnabled = !editor->snapEnabled; SetStatus(editor, editor->snapEnabled ? "Grid snapping enabled" : "Grid snapping disabled"); return; }
+    if (ShiftHeld() && IsKeyPressed(KEY_COMMA)) { AdjustGridStep(editor, -1); return; }
+    if (ShiftHeld() && IsKeyPressed(KEY_PERIOD)) { AdjustGridStep(editor, 1); return; }
 
     if (IsKeyPressed(KEY_F1)) {
         EditorSceneUnloadModels(editor->modelCache, LEVL_MAX_OBJECTS);
@@ -239,9 +557,12 @@ static void UpdateEditorControls(Editor *editor)
         LevlDocumentExportToGame(&editor->document, "../Slimeworks Factory/levels/factory.levl", result, (int)sizeof(result));
         SetStatus(editor, result);
     }
-    if (IsKeyPressed(KEY_A)) AddObject(editor, LEVL_OBJECT_BOX);
+    if (IsKeyPressed(KEY_G)) SetGizmoMode(editor, EDITOR_GIZMO_MOVE);
+    if (IsKeyPressed(KEY_R) && !ShiftHeld()) SetGizmoMode(editor, EDITOR_GIZMO_ROTATE);
+    if (IsKeyPressed(KEY_S) && !ShiftHeld()) SetGizmoMode(editor, EDITOR_GIZMO_SCALE);
+    if (IsKeyPressed(KEY_A) && !ShiftHeld()) AddObject(editor, LEVL_OBJECT_BOX);
     if (IsKeyPressed(KEY_P)) AddObject(editor, LEVL_OBJECT_PLATFORM);
-    if (IsKeyPressed(KEY_R)) AddObject(editor, LEVL_OBJECT_RAMP);
+    if (ShiftHeld() && IsKeyPressed(KEY_R)) AddObject(editor, LEVL_OBJECT_RAMP);
     if (IsKeyPressed(KEY_K)) AddObject(editor, LEVL_OBJECT_MARKER);
     if (IsKeyPressed(KEY_I)) BeginTextInput(editor, EDITOR_TEXT_IMPORT);
     if (IsKeyPressed(KEY_F2)) BeginTextInput(editor, EDITOR_TEXT_NAME);
@@ -254,9 +575,9 @@ static void UpdateEditorControls(Editor *editor)
         }
     }
 
-    LevlObject *object = SelectedObject(editor);
+    object = SelectedObject(editor);
     if (!object) return;
-    float step = IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT) ? 1.0f : 0.2f;
+    float step = editor->snapEnabled ? editor->gridStep : (ShiftHeld() ? 1.0f : 0.2f);
     Vector3 movement = { 0 };
     if (IsKeyDown(KEY_LEFT)) movement.x -= step;
     if (IsKeyDown(KEY_RIGHT)) movement.x += step;
@@ -265,10 +586,10 @@ static void UpdateEditorControls(Editor *editor)
     if (IsKeyDown(KEY_Q)) movement.y += step;
     if (IsKeyDown(KEY_E)) movement.y -= step;
     if (Vector3Length(movement) > 0.0f) MoveSelected(editor, movement);
-    if (IsKeyPressed(KEY_LEFT_BRACKET)) ResizeSelected(editor, -0.25f);
-    if (IsKeyPressed(KEY_RIGHT_BRACKET)) ResizeSelected(editor, 0.25f);
-    if (IsKeyPressed(KEY_COMMA)) { if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation.y -= 15.0f; if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation.y -= 15.0f; editor->document.dirty = true; }
-    if (IsKeyPressed(KEY_PERIOD)) { if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation.y += 15.0f; if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation.y += 15.0f; editor->document.dirty = true; }
+    if (IsKeyPressed(KEY_LEFT_BRACKET)) ResizeSelected(editor, editor->snapEnabled ? -editor->gridStep : -0.25f);
+    if (IsKeyPressed(KEY_RIGHT_BRACKET)) ResizeSelected(editor, editor->snapEnabled ? editor->gridStep : 0.25f);
+    if (IsKeyPressed(KEY_COMMA)) { if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation.y -= editor->snapEnabled ? 15.0f : 5.0f; if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation.y -= editor->snapEnabled ? 15.0f : 5.0f; editor->document.dirty = true; }
+    if (IsKeyPressed(KEY_PERIOD)) { if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation.y += editor->snapEnabled ? 15.0f : 5.0f; if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation.y += editor->snapEnabled ? 15.0f : 5.0f; editor->document.dirty = true; }
     if (object->type == LEVL_OBJECT_BOX) {
         if (IsKeyPressed(KEY_F)) editor->selectedFace = (editor->selectedFace + 1) % 6;
         if (IsKeyPressed(KEY_C)) CycleFaceColor(editor);
@@ -295,6 +616,8 @@ static void DrawInspector(const Editor *editor)
     int x = panelX + 20, y = 20;
     DrawTextLine("SLIMEWORKS LEVEL EDITOR", x, &y, 19, (Color){ 124, 255, 187, 255 });
     DrawTextLine(editor->document.dirty ? "Unsaved changes" : "Saved", x, &y, 14, editor->document.dirty ? ORANGE : LIGHTGRAY);
+    DrawTextLine(TextFormat("Grid %.3g | snap %s", editor->gridStep, editor->snapEnabled ? "on" : "off"), x, &y, 14, editor->snapEnabled ? LIME : LIGHTGRAY);
+    DrawTextLine(editor->cameraMode == EDITOR_CAMERA_ORBIT ? "Camera: orbit" : "Camera: free", x, &y, 14, LIGHTGRAY);
     y += 8;
     const LevlObject *object = editor->selectedIndex >= 0 && editor->selectedIndex < editor->document.objectCount ? &editor->document.objects[editor->selectedIndex] : NULL;
     if (object) {
@@ -323,16 +646,19 @@ static void DrawInspector(const Editor *editor)
 
     y += 12;
     DrawTextLine("CREATE", x, &y, 16, (Color){ 124, 255, 187, 255 });
-    DrawTextLine("A box | P platform | R ramp | K marker", x, &y, 14, LIGHTGRAY);
+    DrawTextLine("A box | P platform | Shift+R ramp | K marker", x, &y, 14, LIGHTGRAY);
     DrawTextLine("I import OBJ/GLB/GLTF/IQM/VOX/FBX", x, &y, 14, LIGHTGRAY);
     DrawTextLine("EDIT", x, &y, 16, (Color){ 124, 255, 187, 255 });
+    DrawTextLine("G/R/S gizmo | drag coloured axis/ring", x, &y, 14, LIGHTGRAY);
     DrawTextLine("Click/Tab select | arrows move | Q/E vertical", x, &y, 14, LIGHTGRAY);
-    DrawTextLine("[ ] resize | , . rotate | F2 rename | T tag", x, &y, 14, LIGHTGRAY);
+    DrawTextLine("[ ] resize | , . rotate | Ctrl+A apply scale", x, &y, 14, LIGHTGRAY);
+    DrawTextLine("F2 rename | T tag | Shift+S snap | Shift+,/. grid", x, &y, 14, LIGHTGRAY);
     DrawTextLine("Box: F face, C colour, B/N bevel, +/- edge loops", x, &y, 14, LIGHTGRAY);
     DrawTextLine("O collider | H show colliders | Del delete", x, &y, 14, LIGHTGRAY);
     DrawTextLine("SAVE / EXPORT", x, &y, 16, (Color){ 124, 255, 187, 255 });
     DrawTextLine("Ctrl+S save | Ctrl+O load | F6 export to game", x, &y, 14, LIGHTGRAY);
-    DrawTextLine("Hold right mouse + WASD to fly camera", x, &y, 14, LIGHTGRAY);
+    DrawTextLine("MMB orbit | Shift+MMB pan | wheel zoom", x, &y, 14, LIGHTGRAY);
+    DrawTextLine("Shift+] free/orbit | free: RMB + WASD/QE", x, &y, 14, LIGHTGRAY);
 }
 
 static void DrawOverlay(const Editor *editor)
@@ -352,13 +678,20 @@ static void DrawOverlay(const Editor *editor)
 
 void EditorInit(Editor *editor)
 {
-    *editor = (Editor){ .selectedIndex = 0, .showColliders = true };
-    InitWindow(1440, 900, "Slimeworks Level Editor");
+    *editor = (Editor){ .selectedIndex = 0, .showColliders = true, .cameraMode = EDITOR_CAMERA_ORBIT,
+                        .gizmoMode = EDITOR_GIZMO_MOVE, .gizmoHighlightedAxis = -1, .snapEnabled = true, .gridStep = 1.0f };
+    InitWindow(1280, 720, "Slimeworks Level Editor");
     SetTargetFPS(60);
     editor->camera = (Camera3D){
         .position = { 24.0f, 19.0f, 24.0f }, .target = { 0.0f, 0.0f, 0.0f },
         .up = { 0.0f, 1.0f, 0.0f }, .fovy = 50.0f, .projection = CAMERA_PERSPECTIVE
     };
+    editor->orbitTarget = editor->camera.target;
+    Vector3 initialOffset = Vector3Subtract(editor->camera.position, editor->orbitTarget);
+    editor->orbitDistance = Vector3Length(initialOffset);
+    editor->orbitYaw = atan2f(initialOffset.x, initialOffset.z);
+    editor->orbitPitch = asinf(initialOffset.y / editor->orbitDistance);
+    SyncOrbitCamera(editor);
     LevlDocumentNew(&editor->document);
     SetStatus(editor, "Starter level ready — F6 exports it to the game");
 }
@@ -369,12 +702,15 @@ void EditorRun(Editor *editor)
         float deltaTime = fminf(GetFrameTime(), 0.05f);
         if (editor->statusSeconds > 0.0f) editor->statusSeconds -= deltaTime;
         if (editor->textMode != EDITOR_TEXT_NONE) UpdateTextInput(editor);
-        else UpdateEditorControls(editor);
+        else UpdateEditorControls(editor, deltaTime);
 
         BeginDrawing();
         ClearBackground((Color){ 36, 62, 83, 255 });
         BeginMode3D(editor->camera);
-        EditorSceneDraw(&editor->document, editor->selectedIndex, editor->modelCache, LEVL_MAX_OBJECTS, editor->showColliders);
+        EditorSceneDraw(&editor->document, editor->selectedIndex, editor->modelCache, LEVL_MAX_OBJECTS,
+                        editor->showColliders, editor->gridStep);
+        LevlObject *selected = SelectedObject(editor);
+        if (selected) EditorSceneDrawGizmo(selected, editor->gizmoMode, editor->gizmoHighlightedAxis);
         EndMode3D();
         DrawOverlay(editor);
         EndDrawing();

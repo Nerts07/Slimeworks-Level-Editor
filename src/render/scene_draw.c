@@ -101,7 +101,7 @@ static void DrawMarker(const LevlObject *object)
     DrawSphere((Vector3){ object->position.x, object->position.y + 1.25f, object->position.z }, 0.11f, WHITE);
 }
 
-static Model *FindModel(EditorModelCache *modelCache, int cacheCount, const LevlObject *object)
+Model *EditorSceneGetModel(EditorModelCache *modelCache, int cacheCount, const LevlObject *object)
 {
     for (int i = 0; i < cacheCount; ++i) {
         EditorModelCache *entry = &modelCache[i];
@@ -122,7 +122,7 @@ static Model *FindModel(EditorModelCache *modelCache, int cacheCount, const Levl
 
 static void DrawModelObject(EditorModelCache *modelCache, int cacheCount, const LevlObject *object)
 {
-    Model *cached = FindModel(modelCache, cacheCount, object);
+    Model *cached = EditorSceneGetModel(modelCache, cacheCount, object);
     if (!cached) {
         DrawCubeV(object->position, object->data.model.collisionSize, MAROON);
         return;
@@ -133,9 +133,66 @@ static void DrawModelObject(EditorModelCache *modelCache, int cacheCount, const 
     DrawModel(model, object->position, 1.0f, WHITE);
 }
 
-void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache *modelCache, int cacheCount, bool showColliders)
+static Vector3 GizmoOrigin(const LevlObject *object)
 {
-    DrawGrid(160, 1.0f);
+    if (object->type == LEVL_OBJECT_PLATFORM) return (Vector3){ object->position.x, object->data.platform.top, object->position.z };
+    return object->position;
+}
+
+static float GizmoSize(const LevlObject *object)
+{
+    BoundingBox bounds = LevlObjectGetBounds(object);
+    float x = bounds.max.x - bounds.min.x, y = bounds.max.y - bounds.min.y, z = bounds.max.z - bounds.min.z;
+    float maximum = fmaxf(x, fmaxf(y, z));
+    return fmaxf(1.25f, fminf(maximum * 0.65f, 4.0f));
+}
+
+static Color AxisColor(int axis, int highlightedAxis)
+{
+    if (axis == highlightedAxis) return YELLOW;
+    return axis == 0 ? RED : (axis == 1 ? GREEN : BLUE);
+}
+
+static void DrawRotationRing(Vector3 origin, float radius, int axis, Color color)
+{
+    const int segments = 48;
+    for (int segment = 0; segment < segments; ++segment) {
+        float a = (float)segment / (float)segments * 2.0f * PI;
+        float b = (float)(segment + 1) / (float)segments * 2.0f * PI;
+        Vector3 p0, p1;
+        if (axis == 0) { p0 = (Vector3){ 0, cosf(a) * radius, sinf(a) * radius }; p1 = (Vector3){ 0, cosf(b) * radius, sinf(b) * radius }; }
+        else if (axis == 1) { p0 = (Vector3){ cosf(a) * radius, 0, sinf(a) * radius }; p1 = (Vector3){ cosf(b) * radius, 0, sinf(b) * radius }; }
+        else { p0 = (Vector3){ cosf(a) * radius, sinf(a) * radius, 0 }; p1 = (Vector3){ cosf(b) * radius, sinf(b) * radius, 0 }; }
+        DrawLine3D(Vector3Add(origin, p0), Vector3Add(origin, p1), color);
+    }
+}
+
+void EditorSceneDrawGizmo(const LevlObject *object, EditorGizmoMode mode, int highlightedAxis)
+{
+    if (!object) return;
+    Vector3 origin = GizmoOrigin(object);
+    float size = GizmoSize(object);
+    if (mode == EDITOR_GIZMO_ROTATE) {
+        for (int axis = 0; axis < 3; ++axis) DrawRotationRing(origin, size, axis, AxisColor(axis, highlightedAxis));
+        DrawSphere(origin, 0.09f, WHITE);
+        return;
+    }
+    const Vector3 directions[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    for (int axis = 0; axis < 3; ++axis) {
+        Vector3 end = Vector3Add(origin, Vector3Scale(directions[axis], size));
+        Color color = AxisColor(axis, highlightedAxis);
+        DrawCylinderEx(origin, end, 0.035f, 0.025f, 8, color);
+        if (mode == EDITOR_GIZMO_MOVE) DrawSphere(end, 0.13f, color);
+        else DrawCubeV(end, (Vector3){ 0.22f, 0.22f, 0.22f }, color);
+    }
+    DrawSphere(origin, 0.08f, WHITE);
+}
+
+void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache *modelCache, int cacheCount,
+                     bool showColliders, float gridStep)
+{
+    int gridSlices = gridStep < 0.5f ? 80 : 160;
+    DrawGrid(gridSlices, gridStep);
     for (int i = 0; i < document->objectCount; ++i) {
         LevlObject *object = &document->objects[i];
         switch (object->type) {
@@ -148,6 +205,16 @@ void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache
         BoundingBox bounds = LevlObjectGetBounds(object);
         if (showColliders && (object->type == LEVL_OBJECT_BOX || object->type == LEVL_OBJECT_MODEL)) DrawBoundingBox(bounds, Fade(RED, 0.4f));
         if (i == selectedIndex) DrawBoundingBox(bounds, YELLOW);
+    }
+}
+
+void EditorSceneInvalidateModel(EditorModelCache *modelCache, int cacheCount, int objectId)
+{
+    for (int i = 0; i < cacheCount; ++i) {
+        if (modelCache[i].objectId != objectId) continue;
+        if (modelCache[i].loaded) UnloadModel(modelCache[i].model);
+        modelCache[i] = (EditorModelCache){ 0 };
+        return;
     }
 }
 
