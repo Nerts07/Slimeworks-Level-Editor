@@ -16,8 +16,11 @@ typedef enum EditorNavigationMode {
 
 typedef enum EditorNavigationView {
     EDITOR_VIEW_FRONT,
+    EDITOR_VIEW_BACK,
     EDITOR_VIEW_RIGHT,
-    EDITOR_VIEW_TOP
+    EDITOR_VIEW_LEFT,
+    EDITOR_VIEW_TOP,
+    EDITOR_VIEW_BOTTOM
 } EditorNavigationView;
 
 typedef struct EditorNavigation {

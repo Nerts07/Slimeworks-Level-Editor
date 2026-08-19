@@ -137,12 +137,19 @@ static void SnapToView(EditorNavigation *navigation, Camera3D *camera, EditorNav
 {
     bool flip = navigation->hasLastView && navigation->orthographic && navigation->lastView == view;
     float distance = navigation->orbitDistance;
-    Vector3 offset = { 0.0f, 0.0f, flip ? -distance : distance };
+    Vector3 offset = { 0.0f, 0.0f, view == EDITOR_VIEW_BACK ? -distance : distance };
     Vector3 targetUp = { 0.0f, 1.0f, 0.0f };
+    if (view == EDITOR_VIEW_FRONT) offset = (Vector3){ 0.0f, 0.0f, flip ? -distance : distance };
+    if (view == EDITOR_VIEW_BACK) offset = (Vector3){ 0.0f, 0.0f, flip ? distance : -distance };
     if (view == EDITOR_VIEW_RIGHT) offset = (Vector3){ flip ? -distance : distance, 0.0f, 0.0f };
+    if (view == EDITOR_VIEW_LEFT) offset = (Vector3){ flip ? distance : -distance, 0.0f, 0.0f };
     if (view == EDITOR_VIEW_TOP) {
         offset = (Vector3){ 0.0f, flip ? -distance : distance, 0.0f };
         targetUp = (Vector3){ 0.0f, 0.0f, -1.0f };
+    }
+    if (view == EDITOR_VIEW_BOTTOM) {
+        offset = (Vector3){ 0.0f, flip ? distance : -distance, 0.0f };
+        targetUp = (Vector3){ 0.0f, 0.0f, 1.0f };
     }
     Vector3 targetPosition = Vector3Add(camera->target, offset);
     navigation->mode = EDITOR_NAVIGATION_ORBIT;
@@ -169,7 +176,11 @@ bool EditorNavigationHandleViewShortcuts(EditorNavigation *navigation, Camera3D 
 {
     if (!ControlHeld()) return false;
     if (IsKeyPressed(KEY_ONE)) { SnapToView(navigation, camera, EDITOR_VIEW_FRONT); return true; }
+    if (IsKeyPressed(KEY_TWO)) { SnapToView(navigation, camera, EDITOR_VIEW_BACK); return true; }
     if (IsKeyPressed(KEY_THREE)) { SnapToView(navigation, camera, EDITOR_VIEW_RIGHT); return true; }
+    if (IsKeyPressed(KEY_FOUR)) { SnapToView(navigation, camera, EDITOR_VIEW_LEFT); return true; }
+    if (IsKeyPressed(KEY_FIVE)) { SnapToView(navigation, camera, EDITOR_VIEW_TOP); return true; }
+    if (IsKeyPressed(KEY_SIX)) { SnapToView(navigation, camera, EDITOR_VIEW_BOTTOM); return true; }
     if (IsKeyPressed(KEY_SEVEN)) { SnapToView(navigation, camera, EDITOR_VIEW_TOP); return true; }
     return false;
 }
@@ -283,5 +294,5 @@ const char *EditorNavigationFreeHint(const EditorNavigation *navigation)
 const char *EditorNavigationViewHint(const EditorNavigation *navigation)
 {
     (void)navigation;
-    return "Ortho: Ctrl+1 front/back, 3 right/left, 7 top/bottom";
+    return "Ortho: Ctrl+1/2 front/back, 3/4 right/left, 5/6 top/bottom (7 = top)";
 }

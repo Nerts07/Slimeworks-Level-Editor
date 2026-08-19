@@ -29,7 +29,7 @@ make
 | Мышь — схема Blender | MMB — orbit; `Shift` + MMB — pan; `Ctrl` + MMB — плавный dolly; колёсико — zoom |
 | Тачпад — macOS и Windows | ПКМ — orbit; `Shift` + ПКМ — pan; `Ctrl` + ПКМ — плавный dolly; scroll — zoom |
 | Free mode | `Shift` + `]`; удерживать ПКМ или MMB + `WASD`, `Q`/`E` и мышь; повторить `Shift` + `]` для orbit |
-| Ортографический вид — macOS и Windows | `Ctrl` + `1` — front/back, `Ctrl` + `3` — right/left, `Ctrl` + `7` — top/bottom |
+| Ортографический вид — macOS и Windows | `Ctrl+1/2` — front/back, `Ctrl+3/4` — right/left, `Ctrl+5/6` — top/bottom; `Ctrl+7` — top |
 | Выделение | ЛКМ или `Tab` |
 | Создать бокс / площадку / склон / маркер | `A` / `P` / `Shift` + `R` / `K` |
 | Импорт модели | `I`, вставить путь, `Enter` |
