@@ -8,11 +8,6 @@ static bool ShiftHeld(void)
     return IsKeyDown(KEY_LEFT_SHIFT) || IsKeyDown(KEY_RIGHT_SHIFT);
 }
 
-static bool AltHeld(void)
-{
-    return IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT);
-}
-
 static bool ControlHeld(void)
 {
     return IsKeyDown(KEY_LEFT_CONTROL) || IsKeyDown(KEY_RIGHT_CONTROL);
@@ -47,29 +42,30 @@ static void SyncOrbitCamera(const EditorNavigation *navigation, Camera3D *camera
     camera->target = navigation->orbitTarget;
 }
 
-static bool IsAlternateTrackpadGesture(const EditorNavigation *navigation)
+static bool IsNavigationButtonDown(void)
 {
-    /* macOS: Option+click works reliably on a single-button trackpad.
-       Windows: Alt+click provides the same fallback on laptop touchpads. */
-    if (navigation->profile == EDITOR_NAVIGATION_MACOS) return AltHeld() && IsMouseButtonDown(MOUSE_BUTTON_LEFT);
-    return AltHeld() && IsMouseButtonDown(MOUSE_BUTTON_LEFT);
+    /* MMB is the exact Blender binding for a mouse. RMB is the practical touchpad equivalent. */
+    return IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) || IsMouseButtonDown(MOUSE_BUTTON_RIGHT);
 }
 
-static bool IsPanGesture(const EditorNavigation *navigation)
+static bool IsPanGesture(void)
 {
-    return (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) && ShiftHeld()) ||
-           (IsAlternateTrackpadGesture(navigation) && ShiftHeld());
+    return IsNavigationButtonDown() && ShiftHeld() && !ControlHeld();
 }
 
-static bool IsOrbitGesture(const EditorNavigation *navigation)
+static bool IsOrbitGesture(void)
 {
-    return (IsMouseButtonDown(MOUSE_BUTTON_MIDDLE) && !ShiftHeld()) ||
-           (IsAlternateTrackpadGesture(navigation) && !ShiftHeld());
+    return IsNavigationButtonDown() && !ShiftHeld() && !ControlHeld();
 }
 
-static bool IsFreeLookGesture(const EditorNavigation *navigation)
+static bool IsDollyGesture(void)
 {
-    return IsMouseButtonDown(MOUSE_BUTTON_RIGHT) || IsAlternateTrackpadGesture(navigation);
+    return IsNavigationButtonDown() && ControlHeld() && !ShiftHeld();
+}
+
+static bool IsFreeLookGesture(void)
+{
+    return IsMouseButtonDown(MOUSE_BUTTON_RIGHT) || IsMouseButtonDown(MOUSE_BUTTON_MIDDLE);
 }
 
 void EditorNavigationInit(EditorNavigation *navigation, const Camera3D *camera)
@@ -129,16 +125,10 @@ static void SnapToView(EditorNavigation *navigation, Camera3D *camera, EditorNav
 
 bool EditorNavigationHandleViewShortcuts(EditorNavigation *navigation, Camera3D *camera)
 {
-    if (navigation->profile == EDITOR_NAVIGATION_MACOS) {
-        if (!ControlHeld() || !ShiftHeld()) return false;
-        if (IsKeyPressed(KEY_ONE)) { SnapToView(navigation, camera, EDITOR_VIEW_FRONT); return true; }
-        if (IsKeyPressed(KEY_THREE)) { SnapToView(navigation, camera, EDITOR_VIEW_RIGHT); return true; }
-        if (IsKeyPressed(KEY_SEVEN)) { SnapToView(navigation, camera, EDITOR_VIEW_TOP); return true; }
-        return false;
-    }
-    if (IsKeyPressed(KEY_KP_1)) { SnapToView(navigation, camera, EDITOR_VIEW_FRONT); return true; }
-    if (IsKeyPressed(KEY_KP_3)) { SnapToView(navigation, camera, EDITOR_VIEW_RIGHT); return true; }
-    if (IsKeyPressed(KEY_KP_7)) { SnapToView(navigation, camera, EDITOR_VIEW_TOP); return true; }
+    if (!ControlHeld() || !ShiftHeld()) return false;
+    if (IsKeyPressed(KEY_ONE)) { SnapToView(navigation, camera, EDITOR_VIEW_FRONT); return true; }
+    if (IsKeyPressed(KEY_THREE)) { SnapToView(navigation, camera, EDITOR_VIEW_RIGHT); return true; }
+    if (IsKeyPressed(KEY_SEVEN)) { SnapToView(navigation, camera, EDITOR_VIEW_TOP); return true; }
     return false;
 }
 
@@ -146,9 +136,10 @@ bool EditorNavigationUpdate(EditorNavigation *navigation, Camera3D *camera, floa
 {
     float wheel = GetMouseWheelMove();
     if (navigation->mode == EDITOR_NAVIGATION_ORBIT) {
-        bool pan = IsPanGesture(navigation);
-        bool orbit = IsOrbitGesture(navigation);
-        if (pan || orbit) {
+        bool pan = IsPanGesture();
+        bool orbit = IsOrbitGesture();
+        bool dolly = IsDollyGesture();
+        if (pan || orbit || dolly) {
             Vector2 mouseDelta = GetMouseDelta();
             if (pan) {
                 Vector3 forward = Vector3Normalize(Vector3Subtract(camera->target, camera->position));
@@ -157,7 +148,7 @@ bool EditorNavigationUpdate(EditorNavigation *navigation, Camera3D *camera, floa
                 float panSpeed = navigation->orbitDistance * 0.0018f;
                 navigation->orbitTarget = Vector3Add(navigation->orbitTarget, Vector3Scale(right, -mouseDelta.x * panSpeed));
                 navigation->orbitTarget = Vector3Add(navigation->orbitTarget, Vector3Scale(up, mouseDelta.y * panSpeed));
-            } else {
+            } else if (orbit) {
                 if (navigation->orthographic && Vector2Length(mouseDelta) > 0.01f) {
                     navigation->orthographic = false;
                     camera->projection = CAMERA_PERSPECTIVE;
@@ -167,6 +158,17 @@ bool EditorNavigationUpdate(EditorNavigation *navigation, Camera3D *camera, floa
                 navigation->yaw -= mouseDelta.x * 0.008f;
                 navigation->pitch += mouseDelta.y * 0.008f;
                 ClampPitch(navigation);
+            } else {
+                float zoom = mouseDelta.y * 0.015f;
+                if (navigation->orthographic) {
+                    camera->fovy *= expf(zoom);
+                    if (camera->fovy < 2.0f) camera->fovy = 2.0f;
+                    if (camera->fovy > 160.0f) camera->fovy = 160.0f;
+                } else {
+                    navigation->orbitDistance *= expf(zoom);
+                    if (navigation->orbitDistance < 1.5f) navigation->orbitDistance = 1.5f;
+                    if (navigation->orbitDistance > 250.0f) navigation->orbitDistance = 250.0f;
+                }
             }
         }
         if (fabsf(wheel) > 0.001f) {
@@ -181,10 +183,10 @@ bool EditorNavigationUpdate(EditorNavigation *navigation, Camera3D *camera, floa
             }
         }
         SyncOrbitCamera(navigation, camera);
-        return pan || orbit;
+        return pan || orbit || dolly;
     }
 
-    bool freeLook = IsFreeLookGesture(navigation);
+    bool freeLook = IsFreeLookGesture();
     Vector3 direction = DirectionFromAngles(navigation->yaw, navigation->pitch);
     if (freeLook) {
         Vector2 mouseDelta = GetMouseDelta();
@@ -223,20 +225,19 @@ const char *EditorNavigationModeName(const EditorNavigation *navigation)
 const char *EditorNavigationOrbitHint(const EditorNavigation *navigation)
 {
     return navigation->profile == EDITOR_NAVIGATION_MACOS ?
-        "macOS: MMB orbit | Option+LMB trackpad orbit | Option+Shift+LMB pan" :
-        "Windows: MMB orbit | Alt+LMB laptop orbit | Alt+Shift+LMB pan";
+        "Mouse: MMB orbit, Shift+MMB pan, Ctrl+MMB dolly" :
+        "Mouse: MMB orbit, Shift+MMB pan, Ctrl+MMB dolly";
 }
 
 const char *EditorNavigationFreeHint(const EditorNavigation *navigation)
 {
     return navigation->profile == EDITOR_NAVIGATION_MACOS ?
-        "Free: RMB or Option+LMB + WASD/QE" :
-        "Free: RMB or Alt+LMB + WASD/QE";
+        "Trackpad: RMB orbit, Shift+RMB pan, Ctrl+RMB dolly" :
+        "Trackpad: RMB orbit, Shift+RMB pan, Ctrl+RMB dolly";
 }
 
 const char *EditorNavigationViewHint(const EditorNavigation *navigation)
 {
-    return navigation->profile == EDITOR_NAVIGATION_MACOS ?
-        "Ortho: Ctrl+Shift+1 front, 3 right, 7 top" :
-        "Ortho: NumPad 1 front, 3 right, 7 top";
+    (void)navigation;
+    return "Ortho: Ctrl+Shift+1 front, 3 right, 7 top";
 }
