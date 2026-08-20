@@ -241,6 +241,7 @@ bool LevlObjectSetParent(LevlDocument *document, LevlObject *child, LevlObject *
     child->parentId = parent ? parent->id : 0;
     if (!parent) {
         child->position = worldPosition;
+        if (child->type == LEVL_OBJECT_BOX) child->data.box.rotation = worldRotation;
         if (child->type == LEVL_OBJECT_MODEL) { child->data.model.rotation = worldRotation; child->data.model.scale = worldScale; }
         if (child->type == LEVL_OBJECT_EMPTY) { child->data.empty.rotation = worldRotation; child->data.empty.scale = worldScale; }
     } else {
@@ -249,6 +250,7 @@ bool LevlObjectSetParent(LevlDocument *document, LevlObject *child, LevlObject *
         Matrix inverseRotation = MatrixInvert(MatrixRotateXYZ(Vector3Scale(parentRotation, DEG2RAD)));
         child->position = Vector3Multiply(Vector3Transform(Vector3Subtract(worldPosition, parentPosition), inverseRotation),
                                           (Vector3){ 1.0f / fmaxf(parentScale.x, 0.0001f), 1.0f / fmaxf(parentScale.y, 0.0001f), 1.0f / fmaxf(parentScale.z, 0.0001f) });
+        if (child->type == LEVL_OBJECT_BOX) child->data.box.rotation = Vector3Subtract(worldRotation, parentRotation);
         if (child->type == LEVL_OBJECT_MODEL) {
             child->data.model.rotation = Vector3Subtract(worldRotation, parentRotation);
             child->data.model.scale = Vector3Divide(worldScale, parentScale);
@@ -271,20 +273,26 @@ void LevlDocumentBakeHierarchy(LevlDocument *document)
         Vector3 position, rotation, scale;
         LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);
         object->position = position;
+        if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation = rotation;
         if (object->type == LEVL_OBJECT_MODEL) { object->data.model.rotation = rotation; object->data.model.scale = scale; }
         if (object->type == LEVL_OBJECT_EMPTY) { object->data.empty.rotation = rotation; object->data.empty.scale = scale; }
         object->parentId = 0;
     }
 }
 
-static bool PointInsideMesh(const LevlObject *object, Vector3 point)
+static bool PointInsideMesh(const LevlDocument *document, const LevlObject *object, Vector3 point)
 {
     const LevlMeshData *mesh = &object->data.mesh;
-    Vector3 local = Vector3Subtract(point, object->position);
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);
+    Matrix transform = MatrixMultiply(MatrixScale(scale.x, scale.y, scale.z), MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD)));
+    Vector3 local = Vector3Transform(Vector3Subtract(point, position), MatrixInvert(transform));
     BoundingBox bounds = LevlMeshGetBounds(object);
-    if (point.x <= bounds.min.x + 0.001f || point.x >= bounds.max.x - 0.001f ||
-        point.y <= bounds.min.y + 0.001f || point.y >= bounds.max.y - 0.001f ||
-        point.z <= bounds.min.z + 0.001f || point.z >= bounds.max.z - 0.001f) return false;
+    bounds.min = Vector3Subtract(bounds.min, object->position);
+    bounds.max = Vector3Subtract(bounds.max, object->position);
+    if (local.x <= bounds.min.x + 0.001f || local.x >= bounds.max.x - 0.001f ||
+        local.y <= bounds.min.y + 0.001f || local.y >= bounds.max.y - 0.001f ||
+        local.z <= bounds.min.z + 0.001f || local.z >= bounds.max.z - 0.001f) return false;
     Ray ray = { .position = local, .direction = Vector3Normalize((Vector3){ 1.0f, 0.173f, 0.317f }) };
     int intersections = 0;
     for (int faceIndex = 0; faceIndex < mesh->faceCount; ++faceIndex) {
@@ -315,8 +323,10 @@ static bool PointInsideModel(const LevlDocument *document, const LevlObject *obj
     }
     Model model = LoadModel(path);
     if (!IsModelValid(model)) return false;
-    Matrix transform = MatrixMultiply(MatrixScale(object->data.model.scale.x, object->data.model.scale.y, object->data.model.scale.z),
-                                      MatrixRotateXYZ(Vector3Scale(object->data.model.rotation, DEG2RAD)));
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);
+    Matrix transform = MatrixMultiply(MatrixScale(scale.x, scale.y, scale.z),
+                                      MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD)));
     Ray ray = { .position = point, .direction = Vector3Normalize((Vector3){ 1.0f, 0.173f, 0.317f }) };
     int intersections = 0;
     for (int meshIndex = 0; meshIndex < model.meshCount; ++meshIndex) {
@@ -330,7 +340,7 @@ static bool PointInsideModel(const LevlDocument *document, const LevlObject *obj
             Vector3 vertices[3];
             for (int corner = 0; corner < 3; ++corner) {
                 Vector3 local = { mesh->vertices[indices[corner] * 3], mesh->vertices[indices[corner] * 3 + 1], mesh->vertices[indices[corner] * 3 + 2] };
-                vertices[corner] = Vector3Add(object->position, Vector3Transform(local, transform));
+                vertices[corner] = Vector3Add(position, Vector3Transform(local, transform));
             }
             RayCollision hit = GetRayCollisionTriangle(ray, vertices[0], vertices[1], vertices[2]);
             if (hit.hit && hit.distance > 0.0001f) intersections++;
@@ -349,29 +359,33 @@ bool LevlDocumentPlayerSpawnBlocked(const LevlDocument *document, Vector3 *block
         for (int objectIndex = 0; objectIndex < document->objectCount; ++objectIndex) {
             const LevlObject *object = &document->objects[objectIndex];
             if (object == marker) continue;
-            if (object->type == LEVL_OBJECT_MESH && object->data.mesh.collidable && PointInsideMesh(object, marker->position)) {
-                if (blockedSpawn) *blockedSpawn = marker->position;
+            Vector3 markerPosition, markerRotation, markerScale;
+            LevlObjectGetWorldTransform(document, marker, &markerPosition, &markerRotation, &markerScale);
+            (void)markerRotation;
+            (void)markerScale;
+            if (object->type == LEVL_OBJECT_MESH && object->data.mesh.collidable && PointInsideMesh(document, object, markerPosition)) {
+                if (blockedSpawn) *blockedSpawn = markerPosition;
                 return true;
             }
             if (object->type == LEVL_OBJECT_BOX && object->data.box.collidable) {
-                BoundingBox bounds = LevlObjectGetBounds(object);
-                if (marker->position.x > bounds.min.x && marker->position.x < bounds.max.x &&
-                    marker->position.y > bounds.min.y && marker->position.y < bounds.max.y &&
-                    marker->position.z > bounds.min.z && marker->position.z < bounds.max.z) {
-                    if (blockedSpawn) *blockedSpawn = marker->position;
+                BoundingBox bounds = LevlObjectGetWorldBounds(document, object);
+                if (markerPosition.x > bounds.min.x && markerPosition.x < bounds.max.x &&
+                    markerPosition.y > bounds.min.y && markerPosition.y < bounds.max.y &&
+                    markerPosition.z > bounds.min.z && markerPosition.z < bounds.max.z) {
+                    if (blockedSpawn) *blockedSpawn = markerPosition;
                     return true;
                 }
             }
             if (inspectModelAssets && object->type == LEVL_OBJECT_MODEL && object->data.model.collidable) {
-                if (PointInsideModel(document, object, marker->position)) {
-                    if (blockedSpawn) *blockedSpawn = marker->position;
+                if (PointInsideModel(document, object, markerPosition)) {
+                    if (blockedSpawn) *blockedSpawn = markerPosition;
                     return true;
                 }
-                BoundingBox bounds = LevlObjectGetBounds(object);
-                if (marker->position.x > bounds.min.x && marker->position.x < bounds.max.x &&
-                    marker->position.y > bounds.min.y && marker->position.y < bounds.max.y &&
-                    marker->position.z > bounds.min.z && marker->position.z < bounds.max.z) {
-                    if (blockedSpawn) *blockedSpawn = marker->position;
+                BoundingBox bounds = LevlObjectGetWorldBounds(document, object);
+                if (markerPosition.x > bounds.min.x && markerPosition.x < bounds.max.x &&
+                    markerPosition.y > bounds.min.y && markerPosition.y < bounds.max.y &&
+                    markerPosition.z > bounds.min.z && markerPosition.z < bounds.max.z) {
+                    if (blockedSpawn) *blockedSpawn = markerPosition;
                     return true;
                 }
             }
@@ -774,4 +788,47 @@ BoundingBox LevlObjectGetBounds(const LevlObject *object)
         max = Vector3Add(object->position, (Vector3){ 0.35f, 0.35f, 0.35f });
     }
     return (BoundingBox){ min, max };
+}
+
+BoundingBox LevlObjectGetWorldBounds(const LevlDocument *document, const LevlObject *object)
+{
+    if (!document || !object) return (BoundingBox){ 0 };
+    Vector3 localMin = { -0.25f, -0.25f, -0.25f }, localMax = { 0.25f, 0.25f, 0.25f };
+    if (object->type == LEVL_OBJECT_BOX) {
+        Vector3 half = Vector3Scale(object->data.box.size, 0.5f);
+        localMin = Vector3Negate(half); localMax = half;
+    } else if (object->type == LEVL_OBJECT_MESH) {
+        BoundingBox bounds = LevlMeshGetBounds(object);
+        localMin = Vector3Subtract(bounds.min, object->position);
+        localMax = Vector3Subtract(bounds.max, object->position);
+    } else if (object->type == LEVL_OBJECT_PLATFORM) {
+        Vector2 half = Vector2Scale(object->data.platform.size, 0.5f);
+        localMin = (Vector3){ -half.x, -2.0f - object->position.y, -half.y };
+        localMax = (Vector3){ half.x, object->data.platform.top - object->position.y, half.y };
+    } else if (object->type == LEVL_OBJECT_RAMP) {
+        Vector3 end = Vector3Subtract(object->data.ramp.end, object->position);
+        float halfWidth = object->data.ramp.width * 0.5f;
+        localMin = (Vector3){ fminf(0.0f, end.x) - halfWidth, fminf(0.0f, end.y) - 0.3f, fminf(0.0f, end.z) - halfWidth };
+        localMax = (Vector3){ fmaxf(0.0f, end.x) + halfWidth, fmaxf(0.0f, end.y) + 0.3f, fmaxf(0.0f, end.z) + halfWidth };
+    } else if (object->type == LEVL_OBJECT_MODEL) {
+        Vector3 half = Vector3Scale(object->data.model.collisionSize, 0.5f);
+        localMin = Vector3Negate(half); localMax = half;
+    } else if (object->type == LEVL_OBJECT_MARKER) {
+        localMin = (Vector3){ -0.35f, -0.35f, -0.35f }; localMax = (Vector3){ 0.35f, 1.35f, 0.35f };
+    }
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);
+    BoundingBox world = { position, position };
+    Matrix rotationMatrix = MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD));
+    for (int corner = 0; corner < 8; ++corner) {
+        Vector3 local = {
+            (corner & 1) ? localMax.x : localMin.x,
+            (corner & 2) ? localMax.y : localMin.y,
+            (corner & 4) ? localMax.z : localMin.z
+        };
+        Vector3 point = Vector3Add(position, Vector3Transform(Vector3Multiply(local, scale), rotationMatrix));
+        world.min = Vector3Min(world.min, point);
+        world.max = Vector3Max(world.max, point);
+    }
+    return world;
 }

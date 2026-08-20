@@ -126,6 +126,7 @@ static void DrawLeftToolbar(const EditorUIState *state)
         buttons[count++] = Button(12, 480, 38, 30, "ALL", EDITOR_UI_SELECT_ALL, false, true);
         buttons[count++] = Button(54, 480, 38, 30, "CLR", EDITOR_UI_CLEAR_SELECTION, false, true);
         buttons[count++] = Button(12, 518, 80, 32, "SUBDIV +", EDITOR_UI_SUBDIVIDE, false, state->meshSelectMode == EDITOR_MESH_SELECT_FACE);
+        buttons[count++] = Button(12, 556, 80, 32, "SNAP ALL", EDITOR_UI_SNAP_MESH, false, true);
     }
     for (int i = 0; i < count; ++i) DrawButton(buttons[i]);
 }
@@ -187,7 +188,7 @@ static void DrawInspectorPanel(const EditorUIState *state)
     y += 56;
     DrawButton(Button(panel.x + 18, y, 146, 30, object->parentId > 0 ? "CLEAR PARENT" : "SET PARENT",
                       object->parentId > 0 ? EDITOR_UI_CLEAR_PARENT : EDITOR_UI_SET_PARENT, false, true));
-    if (state->parentingMode) Label("Choose an Empty in hierarchy", (int)panel.x + 178, y + 9, 12, UI_WARNING);
+    if (state->parentingMode) Label("Choose any object in hierarchy", (int)panel.x + 178, y + 9, 12, UI_WARNING);
     y += 44;
     Label("HIERARCHY", (int)panel.x + 18, y, 11, UI_MUTED);
     if (state->document) {
@@ -309,6 +310,7 @@ EditorUIAction EditorUIHandleMouse(const EditorUIState *state, Vector2 mouse, in
             buttons[count++] = Button(12, 480, 38, 30, "", EDITOR_UI_SELECT_ALL, false, true);
             buttons[count++] = Button(54, 480, 38, 30, "", EDITOR_UI_CLEAR_SELECTION, false, true);
             buttons[count++] = Button(12, 518, 80, 32, "", EDITOR_UI_SUBDIVIDE, false, state->meshSelectMode == EDITOR_MESH_SELECT_FACE);
+            buttons[count++] = Button(12, 556, 80, 32, "", EDITOR_UI_SNAP_MESH, false, true);
         }
         return HitButtons(buttons, count, mouse);
     }

@@ -173,7 +173,7 @@ static void SelectAtMouse(Editor *editor)
     float nearest = FLT_MAX;
     int found = -1;
     for (int i = 0; i < editor->document.objectCount; ++i) {
-        RayCollision hit = GetRayCollisionBox(ray, LevlObjectGetBounds(&editor->document.objects[i]));
+        RayCollision hit = GetRayCollisionBox(ray, LevlObjectGetWorldBounds(&editor->document, &editor->document.objects[i]));
         if (hit.hit && hit.distance < nearest) { nearest = hit.distance; found = i; }
     }
     editor->selectedIndex = found;
@@ -181,10 +181,10 @@ static void SelectAtMouse(Editor *editor)
         LevlObject *child = editor->parentingChildIndex >= 0 && editor->parentingChildIndex < editor->document.objectCount ?
                             &editor->document.objects[editor->parentingChildIndex] : NULL;
         LevlObject *parent = &editor->document.objects[found];
-        if (child && parent->type == LEVL_OBJECT_EMPTY && LevlObjectSetParent(&editor->document, child, parent)) {
+        if (child && LevlObjectSetParent(&editor->document, child, parent)) {
             editor->selectedIndex = editor->parentingChildIndex;
             SetStatus(editor, TextFormat("Parented %s to %s", child->name, parent->name));
-        } else SetStatus(editor, "Parent must be a different Empty object");
+        } else SetStatus(editor, "Parent must be a different object");
         editor->parentingMode = false;
     } else if (found >= 0) SetStatus(editor, TextFormat("Selected %s", editor->document.objects[found].name));
 }
@@ -315,18 +315,19 @@ static void ToggleCollision(Editor *editor)
 
 static Vector3 GizmoOrigin(const Editor *editor, const LevlObject *object)
 {
-    if (object->type == LEVL_OBJECT_PLATFORM) return (Vector3){ object->position.x, object->data.platform.top, object->position.z };
-    if (object->type == LEVL_OBJECT_MODEL || object->type == LEVL_OBJECT_EMPTY) {
-        Vector3 position, rotation, scale;
-        LevlObjectGetWorldTransform(&editor->document, object, &position, &rotation, &scale);
-        return position;
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(&editor->document, object, &position, &rotation, &scale);
+    if (object->type == LEVL_OBJECT_PLATFORM) {
+        Matrix rotationMatrix = MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD));
+        Vector3 top = Vector3Multiply((Vector3){ 0, object->data.platform.top - object->position.y, 0 }, scale);
+        return Vector3Add(position, Vector3Transform(top, rotationMatrix));
     }
-    return object->position;
+    return position;
 }
 
-static float GizmoSize(const LevlObject *object)
+static float GizmoSize(const Editor *editor, const LevlObject *object)
 {
-    BoundingBox bounds = LevlObjectGetBounds(object);
+    BoundingBox bounds = LevlObjectGetWorldBounds(&editor->document, object);
     float sizeX = bounds.max.x - bounds.min.x, sizeY = bounds.max.y - bounds.min.y, sizeZ = bounds.max.z - bounds.min.z;
     float largest = fmaxf(sizeX, fmaxf(sizeY, sizeZ));
     return fmaxf(1.25f, fminf(largest * 0.65f, 4.0f));
@@ -347,9 +348,13 @@ static bool EditGizmoOrigin(const Editor *editor, const LevlObject *object, Vect
 {
     if (!object || !origin || !size) return false;
     *origin = GizmoOrigin(editor, object);
-    *size = GizmoSize(object);
+    *size = GizmoSize(editor, object);
     if (editor->mode == EDITOR_MODE_EDIT) {
         if (!EditorMeshEditGetSelectionCenter(&editor->meshEdit, object, origin)) return false;
+        Vector3 worldPosition, worldRotation, worldScale;
+        LevlObjectGetWorldTransform(&editor->document, object, &worldPosition, &worldRotation, &worldScale);
+        *origin = Vector3Add(worldPosition, Vector3Transform(Vector3Multiply(Vector3Subtract(*origin, object->position), worldScale),
+                                                             MatrixRotateXYZ(Vector3Scale(worldRotation, DEG2RAD))));
         *size = fmaxf(0.8f, *size * 0.45f);
     }
     return true;
@@ -468,6 +473,7 @@ static void UpdateGizmoDrag(Editor *editor)
             memcpy(object->data.mesh.vertices, editor->gizmoDrag.startMeshVertices,
                    (size_t)editor->gizmoDrag.startMeshVertexCount * sizeof(object->data.mesh.vertices[0]));
             EditorMeshEditMove(&editor->meshEdit, object, Vector3Subtract(position, editor->gizmoDrag.startGizmoOrigin));
+            if (editor->snapEnabled) EditorMeshEditSnapSelection(&editor->meshEdit, object, editor->gridStep);
         } else {
             if (editor->snapEnabled) position = SnapVector(position, editor->gridStep);
             ApplyGizmoPosition(editor, object, position);
@@ -567,6 +573,7 @@ static void UpdateMeshEditControls(Editor *editor)
     if (IsKeyDown(KEY_E)) movement.y -= step;
     if (Vector3Length(movement) > 0.0f) {
         EditorMeshEditMove(&editor->meshEdit, object, movement);
+        if (editor->snapEnabled) EditorMeshEditSnapSelection(&editor->meshEdit, object, editor->gridStep);
         editor->document.dirty = true;
     }
     if (IsKeyPressed(KEY_LEFT_BRACKET)) { EditorMeshEditScale(&editor->meshEdit, object, 0.9f); editor->document.dirty = true; }
@@ -778,6 +785,13 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
                 SetStatus(editor, "Selected faces subdivided");
             } else SetStatus(editor, "Select faces before subdivision");
             break;
+        case EDITOR_UI_SNAP_MESH:
+            if (object && object->type == LEVL_OBJECT_MESH) {
+                EditorMeshEditSnapAllVertices(object, editor->gridStep);
+                editor->document.dirty = true;
+                SetStatus(editor, TextFormat("Snapped all vertices to %.3g grid", editor->gridStep));
+            }
+            break;
         case EDITOR_UI_TOGGLE_COLLISION: ToggleCollision(editor); break;
         case EDITOR_UI_APPLY_SCALE: ApplySelectedScale(editor); break;
         case EDITOR_UI_FACE_COLOR: CycleFaceColor(editor); break;
@@ -787,7 +801,7 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
             if (object) {
                 editor->parentingMode = true;
                 editor->parentingChildIndex = editor->selectedIndex;
-                SetStatus(editor, "Select an Empty in the hierarchy as parent");
+                SetStatus(editor, "Select any object in the hierarchy as parent");
             }
             break;
         case EDITOR_UI_CLEAR_PARENT:
@@ -799,14 +813,18 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
                 LevlObject *child = editor->parentingChildIndex >= 0 && editor->parentingChildIndex < editor->document.objectCount ?
                                     &editor->document.objects[editor->parentingChildIndex] : NULL;
                 LevlObject *parent = &editor->document.objects[targetIndex];
-                if (child && parent->type == LEVL_OBJECT_EMPTY && LevlObjectSetParent(&editor->document, child, parent)) {
+                if (child && LevlObjectSetParent(&editor->document, child, parent)) {
                     editor->selectedIndex = editor->parentingChildIndex;
                     SetStatus(editor, TextFormat("Parented %s to %s", child->name, parent->name));
-                } else SetStatus(editor, "Parent must be a different Empty object");
+                } else SetStatus(editor, "Parent must be a different object");
                 editor->parentingMode = false;
             } else {
-                if (editor->mode == EDITOR_MODE_EDIT && editor->document.objects[targetIndex].type != LEVL_OBJECT_MESH) {
-                    ToggleEditMode(editor);
+                if (editor->mode == EDITOR_MODE_EDIT) {
+                    if (editor->document.objects[targetIndex].type == LEVL_OBJECT_MESH) {
+                        EditorMeshEditBegin(&editor->meshEdit, &editor->document.objects[targetIndex]);
+                    } else {
+                        ToggleEditMode(editor);
+                    }
                 }
                 editor->selectedIndex = targetIndex;
                 SetStatus(editor, TextFormat("Selected %s", editor->document.objects[targetIndex].name));
@@ -1052,7 +1070,7 @@ void EditorRun(Editor *editor)
             float gizmoSize = 0.0f;
             if (EditGizmoOrigin(editor, selected, &gizmoOrigin, &gizmoSize))
                 EditorSceneDrawGizmoAt(gizmoOrigin, gizmoSize, editor->gizmoMode, editor->gizmoHighlightedAxis);
-        } else if (selected) EditorSceneDrawGizmo(selected, editor->gizmoMode, editor->gizmoHighlightedAxis);
+        } else if (selected) EditorSceneDrawGizmo(&editor->document, selected, editor->gizmoMode, editor->gizmoHighlightedAxis);
         EndMode3D();
         DrawOverlay(editor);
         EndDrawing();

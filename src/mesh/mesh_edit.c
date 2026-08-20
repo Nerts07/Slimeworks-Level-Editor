@@ -159,6 +159,30 @@ void EditorMeshEditMove(EditorMeshEdit *edit, LevlObject *object, Vector3 delta)
     for (int i = 0; i < object->data.mesh.vertexCount; ++i) if (affected[i]) object->data.mesh.vertices[i] = Vector3Add(object->data.mesh.vertices[i], delta);
 }
 
+void EditorMeshEditSnapSelection(EditorMeshEdit *edit, LevlObject *object, float gridStep)
+{
+    if (!IsEditingObject(edit, object) || gridStep <= 0.0001f) return;
+    bool affected[LEVL_MESH_MAX_VERTICES];
+    CollectAffectedVertices(edit, object, affected);
+    for (int i = 0; i < object->data.mesh.vertexCount; ++i) if (affected[i]) {
+        Vector3 *vertex = &object->data.mesh.vertices[i];
+        vertex->x = roundf((object->position.x + vertex->x) / gridStep) * gridStep - object->position.x;
+        vertex->y = roundf((object->position.y + vertex->y) / gridStep) * gridStep - object->position.y;
+        vertex->z = roundf((object->position.z + vertex->z) / gridStep) * gridStep - object->position.z;
+    }
+}
+
+void EditorMeshEditSnapAllVertices(LevlObject *object, float gridStep)
+{
+    if (!object || object->type != LEVL_OBJECT_MESH || gridStep <= 0.0001f) return;
+    for (int i = 0; i < object->data.mesh.vertexCount; ++i) {
+        Vector3 *vertex = &object->data.mesh.vertices[i];
+        vertex->x = roundf((object->position.x + vertex->x) / gridStep) * gridStep - object->position.x;
+        vertex->y = roundf((object->position.y + vertex->y) / gridStep) * gridStep - object->position.y;
+        vertex->z = roundf((object->position.z + vertex->z) / gridStep) * gridStep - object->position.z;
+    }
+}
+
 void EditorMeshEditScale(EditorMeshEdit *edit, LevlObject *object, float factor)
 {
     if (!IsEditingObject(edit, object)) return;

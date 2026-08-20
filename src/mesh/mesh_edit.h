@@ -32,6 +32,8 @@ void EditorMeshEditScaleAxis(EditorMeshEdit *edit, LevlObject *object, int axis,
 void EditorMeshEditRotate(EditorMeshEdit *edit, LevlObject *object, Vector3 axis, float degrees);
 bool EditorMeshEditGetSelectionCenter(const EditorMeshEdit *edit, const LevlObject *object, Vector3 *center);
 bool EditorMeshEditSubdivideFaces(EditorMeshEdit *edit, LevlObject *object);
+void EditorMeshEditSnapSelection(EditorMeshEdit *edit, LevlObject *object, float gridStep);
+void EditorMeshEditSnapAllVertices(LevlObject *object, float gridStep);
 void EditorMeshEditCycleFaceColor(EditorMeshEdit *edit, LevlObject *object, const Color *palette, int paletteCount);
 void EditorMeshEditDraw(const EditorMeshEdit *edit, const LevlObject *object);
 const char *EditorMeshSelectModeName(EditorMeshSelectMode mode);

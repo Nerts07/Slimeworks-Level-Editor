@@ -108,6 +108,7 @@ bool LevlDocumentSave(LevlDocument *document, const char *filePath, char *messag
 bool LevlDocumentLoad(LevlDocument *document, const char *filePath, char *message, int messageSize);
 bool LevlDocumentExportToGame(const LevlDocument *document, const char *gameLevelPath, char *message, int messageSize);
 BoundingBox LevlObjectGetBounds(const LevlObject *object);
+BoundingBox LevlObjectGetWorldBounds(const LevlDocument *document, const LevlObject *object);
 const char *LevlObjectTypeName(LevlObjectType type);
 bool LevlObjectConvertBoxToMesh(LevlObject *object);
 int LevlMeshBuildEdges(const LevlMeshData *mesh, LevlMeshEdge *edges, int maxEdges);
