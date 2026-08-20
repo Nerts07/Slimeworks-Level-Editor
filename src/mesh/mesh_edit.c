@@ -139,6 +139,18 @@ static Vector3 SelectionCenter(const EditorMeshEdit *edit, const LevlObject *obj
     return count > 0 ? Vector3Scale(center, 1.0f / (float)count) : (Vector3){ 0 };
 }
 
+bool EditorMeshEditGetSelectionCenter(const EditorMeshEdit *edit, const LevlObject *object, Vector3 *center)
+{
+    if (!center || !IsEditingObject(edit, object)) return false;
+    bool affected[LEVL_MESH_MAX_VERTICES];
+    CollectAffectedVertices(edit, object, affected);
+    int count = 0;
+    for (int i = 0; i < object->data.mesh.vertexCount; ++i) if (affected[i]) count++;
+    if (count == 0) return false;
+    *center = Vector3Add(object->position, SelectionCenter(edit, object));
+    return true;
+}
+
 void EditorMeshEditMove(EditorMeshEdit *edit, LevlObject *object, Vector3 delta)
 {
     if (!IsEditingObject(edit, object)) return;
@@ -159,13 +171,26 @@ void EditorMeshEditScale(EditorMeshEdit *edit, LevlObject *object, float factor)
     }
 }
 
-void EditorMeshEditRotateY(EditorMeshEdit *edit, LevlObject *object, float degrees)
+void EditorMeshEditScaleAxis(EditorMeshEdit *edit, LevlObject *object, int axis, float factor)
+{
+    if (!IsEditingObject(edit, object) || axis < 0 || axis > 2) return;
+    bool affected[LEVL_MESH_MAX_VERTICES];
+    CollectAffectedVertices(edit, object, affected);
+    Vector3 center = SelectionCenter(edit, object);
+    for (int i = 0; i < object->data.mesh.vertexCount; ++i) if (affected[i]) {
+        float *coordinate = &object->data.mesh.vertices[i].x;
+        float *centerCoordinate = &center.x;
+        coordinate[axis] = centerCoordinate[axis] + (coordinate[axis] - centerCoordinate[axis]) * factor;
+    }
+}
+
+void EditorMeshEditRotate(EditorMeshEdit *edit, LevlObject *object, Vector3 axis, float degrees)
 {
     if (!IsEditingObject(edit, object)) return;
     bool affected[LEVL_MESH_MAX_VERTICES];
     CollectAffectedVertices(edit, object, affected);
     Vector3 center = SelectionCenter(edit, object);
-    Matrix rotation = MatrixRotateY(degrees * DEG2RAD);
+    Matrix rotation = MatrixRotate(axis, degrees * DEG2RAD);
     for (int i = 0; i < object->data.mesh.vertexCount; ++i) if (affected[i]) {
         Vector3 offset = Vector3Subtract(object->data.mesh.vertices[i], center);
         object->data.mesh.vertices[i] = Vector3Add(center, Vector3Transform(offset, rotation));

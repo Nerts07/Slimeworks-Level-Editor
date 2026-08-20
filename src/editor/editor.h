@@ -31,6 +31,10 @@ typedef struct EditorGizmoDrag {
     float startPlatformTop;
     float startRampWidth;
     float startAngle;
+    Vector3 startMeshVertices[LEVL_MESH_MAX_VERTICES];
+    int startMeshVertexCount;
+    Vector3 startGizmoOrigin;
+    float startGizmoSize;
 } EditorGizmoDrag;
 
 typedef struct Editor {

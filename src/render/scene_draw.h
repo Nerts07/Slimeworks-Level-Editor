@@ -19,6 +19,7 @@ typedef enum EditorGizmoMode {
 void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache *modelCache, int cacheCount,
                      bool showColliders, const Camera3D *camera, bool orthographicGrid, float gridStep);
 void EditorSceneDrawGizmo(const LevlObject *object, EditorGizmoMode mode, int highlightedAxis);
+void EditorSceneDrawGizmoAt(Vector3 origin, float size, EditorGizmoMode mode, int highlightedAxis);
 Model *EditorSceneGetModel(EditorModelCache *modelCache, int cacheCount, const LevlObject *object);
 void EditorSceneInvalidateModel(EditorModelCache *modelCache, int cacheCount, int objectId);
 void EditorSceneUnloadModels(EditorModelCache *modelCache, int cacheCount);

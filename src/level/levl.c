@@ -40,12 +40,40 @@ static void MakeCubeMesh(LevlMeshData *mesh, Vector3 size, Vector3 rotation, con
     Matrix matrix = MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD));
     *mesh = (LevlMeshData){ .vertexCount = 8, .faceCount = 6, .collidable = true };
     for (int i = 0; i < 8; ++i) mesh->vertices[i] = Vector3Transform(localVertices[i], matrix);
-    SetMeshFace(&mesh->faces[0], 4, 3, 2, 6, 7, faceColors[0]);
-    SetMeshFace(&mesh->faces[1], 4, 4, 5, 1, 0, faceColors[1]);
-    SetMeshFace(&mesh->faces[2], 4, 0, 1, 2, 3, faceColors[2]);
-    SetMeshFace(&mesh->faces[3], 4, 5, 4, 7, 6, faceColors[3]);
-    SetMeshFace(&mesh->faces[4], 4, 1, 5, 6, 2, faceColors[4]);
-    SetMeshFace(&mesh->faces[5], 4, 4, 0, 3, 7, faceColors[5]);
+    SetMeshFace(&mesh->faces[0], 4, 3, 7, 6, 2, faceColors[0]);
+    SetMeshFace(&mesh->faces[1], 4, 4, 0, 1, 5, faceColors[1]);
+    SetMeshFace(&mesh->faces[2], 4, 0, 3, 2, 1, faceColors[2]);
+    SetMeshFace(&mesh->faces[3], 4, 5, 6, 7, 4, faceColors[3]);
+    SetMeshFace(&mesh->faces[4], 4, 1, 2, 6, 5, faceColors[4]);
+    SetMeshFace(&mesh->faces[5], 4, 4, 7, 3, 0, faceColors[5]);
+}
+
+/* .levl treats the outside of a closed mesh as its visible/front side. */
+static void EnsureMeshOutwardWinding(LevlMeshData *mesh)
+{
+    if (!mesh || mesh->vertexCount < 3) return;
+    Vector3 meshCenter = { 0 };
+    for (int i = 0; i < mesh->vertexCount; ++i) meshCenter = Vector3Add(meshCenter, mesh->vertices[i]);
+    meshCenter = Vector3Scale(meshCenter, 1.0f / (float)mesh->vertexCount);
+    for (int i = 0; i < mesh->faceCount; ++i) {
+        LevlMeshFace *face = &mesh->faces[i];
+        if (face->vertexCount < 3) continue;
+        Vector3 a = mesh->vertices[face->vertices[0]];
+        Vector3 b = mesh->vertices[face->vertices[1]];
+        Vector3 c = mesh->vertices[face->vertices[2]];
+        Vector3 normal = Vector3CrossProduct(Vector3Subtract(b, a), Vector3Subtract(c, a));
+        Vector3 faceCenter = { 0 };
+        for (int vertex = 0; vertex < face->vertexCount; ++vertex)
+            faceCenter = Vector3Add(faceCenter, mesh->vertices[face->vertices[vertex]]);
+        faceCenter = Vector3Scale(faceCenter, 1.0f / (float)face->vertexCount);
+        if (Vector3DotProduct(normal, Vector3Subtract(faceCenter, meshCenter)) < 0.0f) {
+            for (int left = 1, right = face->vertexCount - 1; left < right; ++left, --right) {
+                unsigned short swap = face->vertices[left];
+                face->vertices[left] = face->vertices[right];
+                face->vertices[right] = swap;
+            }
+        }
+    }
 }
 
 const char *LevlObjectTypeName(LevlObjectType type)
@@ -378,6 +406,7 @@ bool LevlDocumentLoad(LevlDocument *document, const char *filePath, char *messag
             if (!fgets(line, sizeof(line), file)) goto parse_error;
             StripLine(line);
             if (strcmp(line, "END_MESH") != 0) goto parse_error;
+            EnsureMeshOutwardWinding(data);
             lastBox = NULL;
             continue;
         } else if (strncmp(line, "FACES ", 6) == 0) {

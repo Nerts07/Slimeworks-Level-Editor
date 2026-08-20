@@ -287,10 +287,20 @@ static float DistanceToSegment(Vector2 point, Vector2 a, Vector2 b)
     return Vector2Distance(point, Vector2Add(a, Vector2Scale(delta, t)));
 }
 
-static int PickGizmoAxis(const Editor *editor, const LevlObject *object, Vector2 mouse)
+static bool EditGizmoOrigin(const Editor *editor, const LevlObject *object, Vector3 *origin, float *size)
 {
-    Vector3 origin = GizmoOrigin(object);
-    float size = GizmoSize(object);
+    if (!object || !origin || !size) return false;
+    *origin = GizmoOrigin(object);
+    *size = GizmoSize(object);
+    if (editor->mode == EDITOR_MODE_EDIT) {
+        if (!EditorMeshEditGetSelectionCenter(&editor->meshEdit, object, origin)) return false;
+        *size = fmaxf(0.8f, *size * 0.45f);
+    }
+    return true;
+}
+
+static int PickGizmoAxis(const Editor *editor, Vector3 origin, float size, Vector2 mouse)
+{
     Vector2 center = GetWorldToScreen(origin, editor->camera);
     float bestDistance = 14.0f;
     int result = -1;
@@ -324,7 +334,7 @@ static int PickGizmoAxis(const Editor *editor, const LevlObject *object, Vector2
     return result;
 }
 
-static void BeginGizmoDrag(Editor *editor, int axis)
+static void BeginGizmoDrag(Editor *editor, int axis, Vector3 origin, float size)
 {
     LevlObject *object = SelectedObject(editor);
     if (!object || axis < 0) return;
@@ -337,8 +347,14 @@ static void BeginGizmoDrag(Editor *editor, int axis)
         .startPlatformSize = object->type == LEVL_OBJECT_PLATFORM ? object->data.platform.size : (Vector2){ 1, 1 },
         .startRampEnd = object->type == LEVL_OBJECT_RAMP ? object->data.ramp.end : (Vector3){ 0 },
         .startPlatformTop = object->type == LEVL_OBJECT_PLATFORM ? object->data.platform.top : 0.0f,
-        .startRampWidth = object->type == LEVL_OBJECT_RAMP ? object->data.ramp.width : 1.0f };
-    Vector2 center = GetWorldToScreen(GizmoOrigin(object), editor->camera);
+        .startRampWidth = object->type == LEVL_OBJECT_RAMP ? object->data.ramp.width : 1.0f,
+        .startGizmoOrigin = origin, .startGizmoSize = size };
+    if (editor->mode == EDITOR_MODE_EDIT) {
+        drag->startMeshVertexCount = object->data.mesh.vertexCount;
+        memcpy(drag->startMeshVertices, object->data.mesh.vertices,
+               (size_t)drag->startMeshVertexCount * sizeof(drag->startMeshVertices[0]));
+    }
+    Vector2 center = GetWorldToScreen(origin, editor->camera);
     drag->startAngle = atan2f(drag->startMouse.y - center.y, drag->startMouse.x - center.x);
 }
 
@@ -361,14 +377,19 @@ static void UpdateGizmoDrag(Editor *editor)
     if (!object) { editor->gizmoDrag.active = false; return; }
     const Vector3 axes[3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
     int axis = editor->gizmoDrag.axis;
-    float gizmoSize = GizmoSize(object);
-    Vector3 origin = GizmoOrigin(object);
+    float gizmoSize = editor->gizmoDrag.startGizmoSize;
+    Vector3 origin = editor->gizmoDrag.startGizmoOrigin;
     Vector2 center = GetWorldToScreen(origin, editor->camera);
 
     if (editor->gizmoMode == EDITOR_GIZMO_ROTATE) {
         Vector2 mouse = GetMousePosition();
         float angle = (atan2f(mouse.y - center.y, mouse.x - center.x) - editor->gizmoDrag.startAngle) * RAD2DEG;
         if (editor->snapEnabled) angle = SnapValue(angle, 15.0f);
+        if (editor->mode == EDITOR_MODE_EDIT) {
+            memcpy(object->data.mesh.vertices, editor->gizmoDrag.startMeshVertices,
+                   (size_t)editor->gizmoDrag.startMeshVertexCount * sizeof(object->data.mesh.vertices[0]));
+            EditorMeshEditRotate(&editor->meshEdit, object, axes[axis], angle);
+        }
         if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation = editor->gizmoDrag.startRotation;
         if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation = editor->gizmoDrag.startRotation;
         if (object->type == LEVL_OBJECT_BOX) ((float *)&object->data.box.rotation)[axis] += angle;
@@ -385,11 +406,23 @@ static void UpdateGizmoDrag(Editor *editor)
     float worldAmount = pixelsAlongAxis / length * gizmoSize;
     if (editor->gizmoMode == EDITOR_GIZMO_MOVE) {
         Vector3 position = Vector3Add(editor->gizmoDrag.startPosition, Vector3Scale(axes[axis], worldAmount));
-        if (editor->snapEnabled) position = SnapVector(position, editor->gridStep);
-        ApplyGizmoPosition(editor, object, position);
+        if (editor->mode == EDITOR_MODE_EDIT) {
+            position = Vector3Add(editor->gizmoDrag.startGizmoOrigin, Vector3Scale(axes[axis], worldAmount));
+            if (editor->snapEnabled) position = SnapVector(position, editor->gridStep);
+            memcpy(object->data.mesh.vertices, editor->gizmoDrag.startMeshVertices,
+                   (size_t)editor->gizmoDrag.startMeshVertexCount * sizeof(object->data.mesh.vertices[0]));
+            EditorMeshEditMove(&editor->meshEdit, object, Vector3Subtract(position, editor->gizmoDrag.startGizmoOrigin));
+        } else {
+            if (editor->snapEnabled) position = SnapVector(position, editor->gridStep);
+            ApplyGizmoPosition(editor, object, position);
+        }
     } else {
         float factor = fmaxf(0.05f, 1.0f + worldAmount / gizmoSize);
-        if (object->type == LEVL_OBJECT_BOX) {
+        if (editor->mode == EDITOR_MODE_EDIT) {
+            memcpy(object->data.mesh.vertices, editor->gizmoDrag.startMeshVertices,
+                   (size_t)editor->gizmoDrag.startMeshVertexCount * sizeof(object->data.mesh.vertices[0]));
+            EditorMeshEditScaleAxis(&editor->meshEdit, object, axis, factor);
+        } else if (object->type == LEVL_OBJECT_BOX) {
             object->data.box.size = editor->gizmoDrag.startBoxSize;
             ((float *)&object->data.box.size)[axis] = ClampMin(((float *)&editor->gizmoDrag.startBoxSize)[axis] * factor, 0.1f);
             if (editor->snapEnabled) ((float *)&object->data.box.size)[axis] = ClampMin(SnapValue(((float *)&object->data.box.size)[axis], editor->gridStep), editor->gridStep);
@@ -483,8 +516,8 @@ static void UpdateMeshEditControls(Editor *editor)
     }
     if (IsKeyPressed(KEY_LEFT_BRACKET)) { EditorMeshEditScale(&editor->meshEdit, object, 0.9f); editor->document.dirty = true; }
     if (IsKeyPressed(KEY_RIGHT_BRACKET)) { EditorMeshEditScale(&editor->meshEdit, object, 1.1f); editor->document.dirty = true; }
-    if (IsKeyPressed(KEY_COMMA)) { EditorMeshEditRotateY(&editor->meshEdit, object, editor->snapEnabled ? -15.0f : -5.0f); editor->document.dirty = true; }
-    if (IsKeyPressed(KEY_PERIOD)) { EditorMeshEditRotateY(&editor->meshEdit, object, editor->snapEnabled ? 15.0f : 5.0f); editor->document.dirty = true; }
+    if (IsKeyPressed(KEY_COMMA)) { EditorMeshEditRotate(&editor->meshEdit, object, (Vector3){ 0, 1, 0 }, editor->snapEnabled ? -15.0f : -5.0f); editor->document.dirty = true; }
+    if (IsKeyPressed(KEY_PERIOD)) { EditorMeshEditRotate(&editor->meshEdit, object, (Vector3){ 0, 1, 0 }, editor->snapEnabled ? 15.0f : 5.0f); editor->document.dirty = true; }
     if (IsKeyPressed(KEY_C) && editor->meshEdit.selectMode == EDITOR_MESH_SELECT_FACE) {
         EditorMeshEditCycleFaceColor(&editor->meshEdit, object, EDITOR_PALETTE, (int)(sizeof(EDITOR_PALETTE) / sizeof(EDITOR_PALETTE[0])));
         editor->document.dirty = true;
@@ -507,12 +540,22 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
         return;
     }
 
-    if (editor->mode == EDITOR_MODE_EDIT) { UpdateMeshEditControls(editor); return; }
     if (editor->gizmoDrag.active) { UpdateGizmoDrag(editor); return; }
     LevlObject *object = SelectedObject(editor);
-    editor->gizmoHighlightedAxis = object ? PickGizmoAxis(editor, object, GetMousePosition()) : -1;
+    Vector3 gizmoOrigin = { 0 };
+    float gizmoSize = 0.0f;
+    bool hasGizmo = EditGizmoOrigin(editor, object, &gizmoOrigin, &gizmoSize);
+    editor->gizmoHighlightedAxis = hasGizmo ? PickGizmoAxis(editor, gizmoOrigin, gizmoSize, GetMousePosition()) : -1;
+    if (editor->mode == EDITOR_MODE_EDIT) {
+        if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && editor->gizmoHighlightedAxis >= 0) {
+            BeginGizmoDrag(editor, editor->gizmoHighlightedAxis, gizmoOrigin, gizmoSize);
+            return;
+        }
+        UpdateMeshEditControls(editor);
+        return;
+    }
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        if (editor->gizmoHighlightedAxis >= 0) BeginGizmoDrag(editor, editor->gizmoHighlightedAxis);
+        if (editor->gizmoHighlightedAxis >= 0) BeginGizmoDrag(editor, editor->gizmoHighlightedAxis, gizmoOrigin, gizmoSize);
         else SelectAtMouse(editor);
     }
     if (IsKeyPressed(KEY_TAB) && !CommandOrControlHeld()) { ToggleEditMode(editor); return; }
@@ -727,8 +770,13 @@ void EditorRun(Editor *editor)
         EditorSceneDraw(&editor->document, editor->selectedIndex, editor->modelCache, LEVL_MAX_OBJECTS,
                         editor->showColliders, &editor->camera, EditorNavigationIsOrthographic(&editor->navigation), editor->gridStep);
         LevlObject *selected = SelectedObject(editor);
-        if (editor->mode == EDITOR_MODE_EDIT && selected) EditorMeshEditDraw(&editor->meshEdit, selected);
-        else if (selected) EditorSceneDrawGizmo(selected, editor->gizmoMode, editor->gizmoHighlightedAxis);
+        if (editor->mode == EDITOR_MODE_EDIT && selected) {
+            EditorMeshEditDraw(&editor->meshEdit, selected);
+            Vector3 gizmoOrigin = { 0 };
+            float gizmoSize = 0.0f;
+            if (EditGizmoOrigin(editor, selected, &gizmoOrigin, &gizmoSize))
+                EditorSceneDrawGizmoAt(gizmoOrigin, gizmoSize, editor->gizmoMode, editor->gizmoHighlightedAxis);
+        } else if (selected) EditorSceneDrawGizmo(selected, editor->gizmoMode, editor->gizmoHighlightedAxis);
         EndMode3D();
         DrawOverlay(editor);
         EndDrawing();

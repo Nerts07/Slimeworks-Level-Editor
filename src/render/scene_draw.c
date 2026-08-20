@@ -182,11 +182,8 @@ static void DrawRotationRing(Vector3 origin, float radius, int axis, Color color
     }
 }
 
-void EditorSceneDrawGizmo(const LevlObject *object, EditorGizmoMode mode, int highlightedAxis)
+void EditorSceneDrawGizmoAt(Vector3 origin, float size, EditorGizmoMode mode, int highlightedAxis)
 {
-    if (!object) return;
-    Vector3 origin = GizmoOrigin(object);
-    float size = GizmoSize(object);
     if (mode == EDITOR_GIZMO_ROTATE) {
         for (int axis = 0; axis < 3; ++axis) DrawRotationRing(origin, size, axis, AxisColor(axis, highlightedAxis));
         DrawSphere(origin, 0.09f, WHITE);
@@ -201,6 +198,12 @@ void EditorSceneDrawGizmo(const LevlObject *object, EditorGizmoMode mode, int hi
         else DrawCubeV(end, (Vector3){ 0.22f, 0.22f, 0.22f }, color);
     }
     DrawSphere(origin, 0.08f, WHITE);
+}
+
+void EditorSceneDrawGizmo(const LevlObject *object, EditorGizmoMode mode, int highlightedAxis)
+{
+    if (!object) return;
+    EditorSceneDrawGizmoAt(GizmoOrigin(object), GizmoSize(object), mode, highlightedAxis);
 }
 
 static float SnapToGrid(float value, float step)
