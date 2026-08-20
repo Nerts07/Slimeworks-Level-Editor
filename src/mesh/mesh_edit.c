@@ -72,7 +72,7 @@ bool EditorMeshEditPick(EditorMeshEdit *edit, const LevlObject *object, Camera3D
     } else if (edit->selectMode == EDITOR_MESH_SELECT_EDGE) {
         LevlMeshEdge edges[EDITOR_MESH_MAX_EDGES];
         int edgeCount = LevlMeshBuildEdges(mesh, edges, EDITOR_MESH_MAX_EDGES);
-        float best = 10.0f;
+        float best = 16.0f;
         for (int i = 0; i < edgeCount; ++i) {
             float distance = DistanceToSegment(mouse, GetWorldToScreen(VertexWorld(object, edges[i].a), camera),
                                                GetWorldToScreen(VertexWorld(object, edges[i].b), camera));
@@ -195,6 +195,48 @@ void EditorMeshEditRotate(EditorMeshEdit *edit, LevlObject *object, Vector3 axis
         Vector3 offset = Vector3Subtract(object->data.mesh.vertices[i], center);
         object->data.mesh.vertices[i] = Vector3Add(center, Vector3Transform(offset, rotation));
     }
+}
+
+bool EditorMeshEditSubdivideFaces(EditorMeshEdit *edit, LevlObject *object)
+{
+    if (!IsEditingObject(edit, object) || edit->selectMode != EDITOR_MESH_SELECT_FACE) return false;
+    LevlMeshData *mesh = &object->data.mesh;
+    int selectedFaces = 0;
+    int resultingFaces = 0;
+    for (int face = 0; face < mesh->faceCount; ++face) {
+        if (edit->faces[face]) { selectedFaces++; resultingFaces += mesh->faces[face].vertexCount; }
+        else resultingFaces++;
+    }
+    if (selectedFaces == 0 || mesh->vertexCount + selectedFaces > LEVL_MESH_MAX_VERTICES ||
+        resultingFaces > LEVL_MESH_MAX_FACES) return false;
+
+    LevlMeshFace oldFaces[LEVL_MESH_MAX_FACES];
+    bool selected[LEVL_MESH_MAX_FACES];
+    memcpy(oldFaces, mesh->faces, (size_t)mesh->faceCount * sizeof(oldFaces[0]));
+    memcpy(selected, edit->faces, sizeof(selected));
+    int oldFaceCount = mesh->faceCount;
+    mesh->faceCount = 0;
+    EditorMeshEditClear(edit);
+    for (int faceIndex = 0; faceIndex < oldFaceCount; ++faceIndex) {
+        LevlMeshFace face = oldFaces[faceIndex];
+        if (!selected[faceIndex]) {
+            mesh->faces[mesh->faceCount++] = face;
+            continue;
+        }
+        Vector3 center = { 0 };
+        for (int vertex = 0; vertex < face.vertexCount; ++vertex)
+            center = Vector3Add(center, mesh->vertices[face.vertices[vertex]]);
+        unsigned short centerIndex = (unsigned short)mesh->vertexCount++;
+        mesh->vertices[centerIndex] = Vector3Scale(center, 1.0f / (float)face.vertexCount);
+        for (int vertex = 0; vertex < face.vertexCount; ++vertex) {
+            int next = (vertex + 1) % face.vertexCount;
+            LevlMeshFace *triangle = &mesh->faces[mesh->faceCount];
+            *triangle = (LevlMeshFace){ .vertexCount = 3, .color = face.color,
+                .vertices = { face.vertices[vertex], face.vertices[next], centerIndex, centerIndex } };
+            edit->faces[mesh->faceCount++] = true;
+        }
+    }
+    return true;
 }
 
 void EditorMeshEditCycleFaceColor(EditorMeshEdit *edit, LevlObject *object, const Color *palette, int paletteCount)

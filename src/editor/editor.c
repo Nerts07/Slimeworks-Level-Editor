@@ -97,7 +97,7 @@ static void ToggleEditMode(Editor *editor)
     }
     editor->mode = EDITOR_MODE_EDIT;
     EditorMeshEditBegin(&editor->meshEdit, object);
-    SetStatus(editor, "Edit Mode — 1 vertex, 2 edge, 3 face; LMB select, Shift+RMB add/remove");
+    SetStatus(editor, "Edit Mode — 1 vertex, 2 edge, 3 face; LMB select, Shift+LMB add/remove");
 }
 
 static Vector3 DefaultCreatePosition(const Editor *editor)
@@ -496,10 +496,9 @@ static void UpdateMeshEditControls(Editor *editor)
     else if (IsKeyPressed(KEY_A) && !ShiftHeld()) { EditorMeshEditSelectAll(&editor->meshEdit, object); SetStatus(editor, "Selected all mesh elements"); }
 
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
-        if (EditorMeshEditPick(&editor->meshEdit, object, editor->camera, GetMousePosition(), false)) SetStatus(editor, "Mesh element selected");
-    }
-    if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && ShiftHeld()) {
-        if (EditorMeshEditPick(&editor->meshEdit, object, editor->camera, GetMousePosition(), true)) SetStatus(editor, "Mesh selection updated");
+        bool append = ShiftHeld();
+        if (EditorMeshEditPick(&editor->meshEdit, object, editor->camera, GetMousePosition(), append))
+            SetStatus(editor, append ? "Mesh selection updated" : "Mesh element selected");
     }
 
     float step = editor->snapEnabled ? editor->gridStep : (ShiftHeld() ? 1.0f : 0.2f);
@@ -522,23 +521,67 @@ static void UpdateMeshEditControls(Editor *editor)
         EditorMeshEditCycleFaceColor(&editor->meshEdit, object, EDITOR_PALETTE, (int)(sizeof(EDITOR_PALETTE) / sizeof(EDITOR_PALETTE[0])));
         editor->document.dirty = true;
     }
-    if (IsKeyPressed(KEY_G)) SetStatus(editor, "Move selection: arrows/Q/E (Shift for large step)");
-    if (IsKeyPressed(KEY_R)) SetStatus(editor, "Rotate selection: , and .");
-    if (IsKeyPressed(KEY_S)) SetStatus(editor, "Scale selection: [ and ]");
+    if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD)) {
+        if (EditorMeshEditSubdivideFaces(&editor->meshEdit, object)) {
+            editor->document.dirty = true;
+            SetStatus(editor, "Selected faces subdivided");
+        } else SetStatus(editor, "Select one or more faces before subdivision (or mesh limit reached)");
+    }
+}
+
+static bool UpdateSharedShortcuts(Editor *editor)
+{
+    if (CommandOrControlHeld()) {
+        if (editor->mode == EDITOR_MODE_OBJECT && IsKeyPressed(KEY_TAB)) { SelectNext(editor); return true; }
+        if (IsKeyPressed(KEY_S)) {
+            char result[192];
+            LevlDocumentSave(&editor->document, "level.levl", result, (int)sizeof(result));
+            SetStatus(editor, result);
+            return true;
+        }
+        if (IsKeyPressed(KEY_O)) {
+            char result[192];
+            if (LevlDocumentLoad(&editor->document, "level.levl", result, (int)sizeof(result))) {
+                EditorSceneUnloadModels(editor->modelCache, LEVL_MAX_OBJECTS);
+                memset(editor->modelCache, 0, sizeof(editor->modelCache));
+                editor->selectedIndex = editor->document.objectCount ? 0 : -1;
+                editor->mode = EDITOR_MODE_OBJECT;
+                EditorMeshEditReset(&editor->meshEdit);
+            }
+            SetStatus(editor, result);
+            return true;
+        }
+        if (editor->mode == EDITOR_MODE_OBJECT && IsKeyPressed(KEY_A)) { ApplySelectedScale(editor); return true; }
+        return false;
+    }
+    if (ShiftHeld() && IsKeyPressed(KEY_RIGHT_BRACKET)) {
+        EditorNavigationToggleMode(&editor->navigation, &editor->camera);
+        SetStatus(editor, editor->navigation.mode == EDITOR_NAVIGATION_FREE ? "Free camera mode enabled" : "Orbit camera mode enabled");
+        return true;
+    }
+    if (ShiftHeld() && IsKeyPressed(KEY_S)) { editor->snapEnabled = !editor->snapEnabled; SetStatus(editor, editor->snapEnabled ? "Grid snapping enabled" : "Grid snapping disabled"); return true; }
+    if (ShiftHeld() && IsKeyPressed(KEY_COMMA)) { AdjustGridStep(editor, -1); return true; }
+    if (ShiftHeld() && IsKeyPressed(KEY_PERIOD)) { AdjustGridStep(editor, 1); return true; }
+    if (IsKeyPressed(KEY_F6)) {
+        char result[192];
+        LevlDocumentExportToGame(&editor->document, "../Slimeworks Factory/levels/factory.levl", result, (int)sizeof(result));
+        SetStatus(editor, result);
+        return true;
+    }
+    if (IsKeyPressed(KEY_G)) { SetGizmoMode(editor, EDITOR_GIZMO_MOVE); return false; }
+    if (IsKeyPressed(KEY_R) && !ShiftHeld()) { SetGizmoMode(editor, EDITOR_GIZMO_ROTATE); return false; }
+    if (IsKeyPressed(KEY_S) && !ShiftHeld()) { SetGizmoMode(editor, EDITOR_GIZMO_SCALE); return false; }
+    return false;
 }
 
 static void UpdateEditorControls(Editor *editor, float deltaTime)
 {
-    /* In Edit Mode Shift+RMB is reserved for multi-selection, not trackpad pan. */
-    if (editor->mode == EDITOR_MODE_EDIT && ShiftHeld() && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
-        UpdateMeshEditControls(editor);
-        return;
-    }
     if (EditorNavigationUpdate(&editor->navigation, &editor->camera, deltaTime)) return;
     if (EditorNavigationHandleViewShortcuts(&editor->navigation, &editor->camera)) {
         SetStatus(editor, "Orthographic view snapped; orbit to return to perspective");
         return;
     }
+    if (UpdateSharedShortcuts(editor)) return;
 
     if (editor->gizmoDrag.active) { UpdateGizmoDrag(editor); return; }
     LevlObject *object = SelectedObject(editor);
@@ -560,36 +603,6 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
     }
     if (IsKeyPressed(KEY_TAB) && !CommandOrControlHeld()) { ToggleEditMode(editor); return; }
 
-    if (CommandOrControlHeld()) {
-        if (IsKeyPressed(KEY_TAB)) { SelectNext(editor); return; }
-        if (IsKeyPressed(KEY_S)) {
-            char result[192]; LevlDocumentSave(&editor->document, "level.levl", result, (int)sizeof(result)); SetStatus(editor, result);
-        }
-        if (IsKeyPressed(KEY_O)) {
-            char result[192];
-            if (LevlDocumentLoad(&editor->document, "level.levl", result, (int)sizeof(result))) {
-                EditorSceneUnloadModels(editor->modelCache, LEVL_MAX_OBJECTS);
-                memset(editor->modelCache, 0, sizeof(editor->modelCache));
-                editor->selectedIndex = editor->document.objectCount ? 0 : -1;
-                editor->mode = EDITOR_MODE_OBJECT;
-                EditorMeshEditReset(&editor->meshEdit);
-            }
-            SetStatus(editor, result);
-        }
-        if (IsKeyPressed(KEY_A)) ApplySelectedScale(editor);
-        return;
-    }
-
-    if (ShiftHeld() && IsKeyPressed(KEY_RIGHT_BRACKET)) {
-        EditorNavigationToggleMode(&editor->navigation, &editor->camera);
-        SetStatus(editor, editor->navigation.mode == EDITOR_NAVIGATION_FREE ?
-                            "Free camera mode enabled" : "Orbit camera mode enabled");
-        return;
-    }
-    if (ShiftHeld() && IsKeyPressed(KEY_S)) { editor->snapEnabled = !editor->snapEnabled; SetStatus(editor, editor->snapEnabled ? "Grid snapping enabled" : "Grid snapping disabled"); return; }
-    if (ShiftHeld() && IsKeyPressed(KEY_COMMA)) { AdjustGridStep(editor, -1); return; }
-    if (ShiftHeld() && IsKeyPressed(KEY_PERIOD)) { AdjustGridStep(editor, 1); return; }
-
     if (IsKeyPressed(KEY_F1)) {
         EditorSceneUnloadModels(editor->modelCache, LEVL_MAX_OBJECTS);
         memset(editor->modelCache, 0, sizeof(editor->modelCache));
@@ -599,14 +612,6 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
         EditorMeshEditReset(&editor->meshEdit);
         SetStatus(editor, "New starter level created");
     }
-    if (IsKeyPressed(KEY_F6)) {
-        char result[192];
-        LevlDocumentExportToGame(&editor->document, "../Slimeworks Factory/levels/factory.levl", result, (int)sizeof(result));
-        SetStatus(editor, result);
-    }
-    if (IsKeyPressed(KEY_G)) SetGizmoMode(editor, EDITOR_GIZMO_MOVE);
-    if (IsKeyPressed(KEY_R) && !ShiftHeld()) SetGizmoMode(editor, EDITOR_GIZMO_ROTATE);
-    if (IsKeyPressed(KEY_S) && !ShiftHeld()) SetGizmoMode(editor, EDITOR_GIZMO_SCALE);
     if (IsKeyPressed(KEY_A) && !ShiftHeld()) AddObject(editor, LEVL_OBJECT_BOX);
     if (ShiftHeld() && IsKeyPressed(KEY_A)) AddObject(editor, LEVL_OBJECT_MESH);
     if (IsKeyPressed(KEY_P)) AddObject(editor, LEVL_OBJECT_PLATFORM);
@@ -713,8 +718,8 @@ static void DrawInspector(const Editor *editor)
     DrawTextLine("[ ] resize | , . rotate | Ctrl+A apply scale", x, &y, 14, LIGHTGRAY);
     DrawTextLine("F2 rename | T tag | Shift+S snap | Shift+,/. grid", x, &y, 14, LIGHTGRAY);
     DrawTextLine("Box: F face, C colour, B/N bevel, +/- edge loops", x, &y, 14, LIGHTGRAY);
-    DrawTextLine("Edit: 1 vertex, 2 edge, 3 face | Shift+RMB multi-select", x, &y, 14, LIGHTGRAY);
-    DrawTextLine("Edit move: arrows/Q/E | [ ] scale | , . rotate | C colour", x, &y, 14, LIGHTGRAY);
+    DrawTextLine("Edit: 1 vertex, 2 edge, 3 face | Shift+LMB multi-select", x, &y, 14, LIGHTGRAY);
+    DrawTextLine("Edit move: arrows/Q/E | [ ] scale | , . rotate | + subdivide faces", x, &y, 14, LIGHTGRAY);
     DrawTextLine("O collider | H show colliders | Del delete", x, &y, 14, LIGHTGRAY);
     DrawTextLine("SAVE / EXPORT", x, &y, 16, (Color){ 124, 255, 187, 255 });
     DrawTextLine("Ctrl+S save | Ctrl+O load | F6 export to game", x, &y, 14, LIGHTGRAY);
