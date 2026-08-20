@@ -5,21 +5,23 @@
             "name": "Run Slimeworks Level Editor",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/main",
+            "program": "${workspaceFolder}/Slimeworks-Level-Editor.exe",
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "Slimeworks Level Editor: rebuild before launch",
-            "MIMode": "lldb"
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:/ProgramData/mingw64/mingw64/bin/gdb.exe"
         },
         {
             "name": "Start editor from src/main.c",
             "type": "cppdbg",
             "request": "launch",
-            "program": "${workspaceFolder}/main",
+            "program": "${workspaceFolder}/Slimeworks-Level-Editor.exe",
             "cwd": "${workspaceFolder}",
             "preLaunchTask": "Slimeworks Level Editor: rebuild before launch",
             "stopAtEntry": false,
             "externalConsole": false,
-            "MIMode": "lldb",
+            "MIMode": "gdb",
+            "miDebuggerPath": "C:/ProgramData/mingw64/mingw64/bin/gdb.exe",
             "presentation": {
                 "group": "slimeworks-editor",
                 "order": 1

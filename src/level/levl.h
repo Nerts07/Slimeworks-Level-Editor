@@ -19,7 +19,8 @@ typedef enum LevlObjectType {
     LEVL_OBJECT_RAMP,
     LEVL_OBJECT_MODEL,
     LEVL_OBJECT_MARKER,
-    LEVL_OBJECT_EMPTY
+    LEVL_OBJECT_EMPTY,
+    LEVL_OBJECT_SLIME_VOLUME
 } LevlObjectType;
 
 typedef struct LevlBoxData {
@@ -75,6 +76,25 @@ typedef struct LevlEmptyData {
     Vector3 scale;
 } LevlEmptyData;
 
+typedef enum LevlSlimeType {
+    LEVL_SLIME_MOSSDROP,
+    LEVL_SLIME_HONEYKIN,
+    LEVL_SLIME_AZURE_PUFF,
+    LEVL_SLIME_EMBERBUD,
+    LEVL_SLIME_ACIDFLARE,
+    LEVL_SLIME_PRISMCORE,
+    LEVL_SLIME_AURORA_BLOOM,
+    LEVL_SLIME_CROWNSLIME,
+    LEVL_SLIME_TYPE_COUNT
+} LevlSlimeType;
+
+typedef struct LevlSlimeVolumeData {
+    Vector3 size;
+    Vector3 rotation;
+    int slimeCount;
+    LevlSlimeType slimeType;
+} LevlSlimeVolumeData;
+
 typedef struct LevlObject {
     int id;
     LevlObjectType type;
@@ -89,6 +109,7 @@ typedef struct LevlObject {
         LevlRampData ramp;
         LevlModelData model;
         LevlEmptyData empty;
+        LevlSlimeVolumeData slimeVolume;
     } data;
 } LevlObject;
 
@@ -110,6 +131,10 @@ bool LevlDocumentExportToGame(const LevlDocument *document, const char *gameLeve
 BoundingBox LevlObjectGetBounds(const LevlObject *object);
 BoundingBox LevlObjectGetWorldBounds(const LevlDocument *document, const LevlObject *object);
 const char *LevlObjectTypeName(LevlObjectType type);
+const char *LevlSlimeTypeName(LevlSlimeType type);
+const char *LevlSlimeTypeDisplayName(LevlSlimeType type);
+Color LevlSlimeTypeColor(LevlSlimeType type);
+bool LevlSlimeTypeFromName(const char *name, LevlSlimeType *outType);
 bool LevlObjectConvertBoxToMesh(LevlObject *object);
 int LevlMeshBuildEdges(const LevlMeshData *mesh, LevlMeshEdge *edges, int maxEdges);
 BoundingBox LevlMeshGetBounds(const LevlObject *object);

@@ -59,3 +59,13 @@ Slimeworks Factory/
 ```
 
 Игра ищет `levels/factory.levl` при старте. Если файла нет или он невалиден, запускается встроенный демонстрационный уровень — проект остаётся рабочим даже после чистого клона.
+
+## Slime Spawn Volume
+
+Строка `SLIME_VOLUME` описывает область случайного появления залежей:
+
+```text
+SLIME_VOLUME <name> <tag> <x> <y> <z> <size_x> <size_y> <size_z> <count> <type>
+```
+
+Допустимые `<type>`: `mossdrop`, `honeykin`, `azure_puff`, `emberbud`, `acidflare`, `prismcore`, `aurora_bloom`, `crownslime`.

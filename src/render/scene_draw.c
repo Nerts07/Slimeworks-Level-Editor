@@ -237,6 +237,41 @@ static void DrawEmpty(const LevlDocument *document, const LevlObject *object)
     (void)rotation;
 }
 
+static void DrawOrientedBoxWires(Vector3 center, Vector3 size, Vector3 rotation, Color color)
+{
+    Matrix rotationMatrix = MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD));
+    Vector3 corners[8];
+    for (int index = 0; index < 8; ++index) {
+        Vector3 local = {
+            (index & 1) ? size.x * 0.5f : -size.x * 0.5f,
+            (index & 2) ? size.y * 0.5f : -size.y * 0.5f,
+            (index & 4) ? size.z * 0.5f : -size.z * 0.5f
+        };
+        corners[index] = Vector3Add(center, Vector3Transform(local, rotationMatrix));
+    }
+    const int edges[12][2] = { {0,1}, {1,3}, {3,2}, {2,0}, {4,5}, {5,7}, {7,6}, {6,4}, {0,4}, {1,5}, {2,6}, {3,7} };
+    for (int edge = 0; edge < 12; ++edge) DrawLine3D(corners[edges[edge][0]], corners[edges[edge][1]], color);
+}
+
+static void DrawSlimeVolume(const LevlDocument *document, const LevlObject *object)
+{
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);
+    Vector3 size = Vector3Multiply(object->data.slimeVolume.size, scale);
+    Color color = LevlSlimeTypeColor(object->data.slimeVolume.slimeType);
+    Matrix rotationMatrix = MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD));
+    DrawCubeV(position, size, Fade(color, 0.12f));
+    DrawOrientedBoxWires(position, size, rotation, color);
+    int previewCount = object->data.slimeVolume.slimeCount;
+    if (previewCount > 8) previewCount = 8;
+    for (int index = 0; index < previewCount; ++index) {
+        float x = ((float)((index * 37) % 100) / 100.0f - 0.5f) * size.x * 0.78f;
+        float z = ((float)((index * 61) % 100) / 100.0f - 0.5f) * size.z * 0.78f;
+        Vector3 blob = Vector3Add(position, Vector3Transform((Vector3){ x, -size.y * 0.45f, z }, rotationMatrix));
+        DrawSphere(blob, 0.22f, color);
+    }
+}
+
 static Vector3 GizmoOrigin(const LevlDocument *document, const LevlObject *object)
 {
     Vector3 position, rotation, scale;
@@ -353,6 +388,7 @@ void EditorSceneDraw(LevlDocument *document, int selectedIndex, const bool *sele
             case LEVL_OBJECT_MODEL: DrawModelObject(document, modelCache, cacheCount, object); break;
             case LEVL_OBJECT_MARKER: DrawMarker(document, object, playerSpawnBlocked); break;
             case LEVL_OBJECT_EMPTY: DrawEmpty(document, object); break;
+            case LEVL_OBJECT_SLIME_VOLUME: DrawSlimeVolume(document, object); break;
         }
         BoundingBox bounds = LevlObjectGetWorldBounds(document, object);
         if (showColliders && object->type == LEVL_OBJECT_MESH) DrawMeshCollision(document, object);

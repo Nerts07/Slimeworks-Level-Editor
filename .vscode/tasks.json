@@ -2,9 +2,18 @@
     "version": "2.0.0",
     "tasks": [
         {
+            "label": "C/C++: gcc.exe build active file",
+            "type": "shell",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/build.ps1"],
+            "options": { "cwd": "${workspaceFolder}" },
+            "problemMatcher": ["$gcc"]
+        },
+        {
             "label": "Slimeworks Level Editor: build",
             "type": "shell",
-            "command": "make",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/build.ps1"],
             "options": { "cwd": "${workspaceFolder}" },
             "problemMatcher": ["$gcc"],
             "group": { "kind": "build", "isDefault": true }
@@ -12,14 +21,15 @@
         {
             "label": "Slimeworks Level Editor: rebuild before launch",
             "type": "shell",
-            "command": "make clean && make",
+            "command": "powershell.exe",
+            "args": ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "${workspaceFolder}/build.ps1"],
             "options": { "cwd": "${workspaceFolder}" },
             "problemMatcher": ["$gcc"]
         },
         {
             "label": "Slimeworks Level Editor: build and run",
             "type": "shell",
-            "command": "make clean && make run",
+            "command": "${workspaceFolder}/Slimeworks-Level-Editor.exe",
             "options": { "cwd": "${workspaceFolder}" },
             "problemMatcher": ["$gcc"]
         }

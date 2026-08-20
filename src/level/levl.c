@@ -86,8 +86,48 @@ const char *LevlObjectTypeName(LevlObjectType type)
         case LEVL_OBJECT_MODEL: return "Model";
         case LEVL_OBJECT_MARKER: return "Marker";
         case LEVL_OBJECT_EMPTY: return "Empty";
+        case LEVL_OBJECT_SLIME_VOLUME: return "Slime Volume";
         default: return "Unknown";
     }
+}
+
+const char *LevlSlimeTypeName(LevlSlimeType type)
+{
+    static const char *names[LEVL_SLIME_TYPE_COUNT] = {
+        "mossdrop", "honeykin", "azure_puff", "emberbud",
+        "acidflare", "prismcore", "aurora_bloom", "crownslime"
+    };
+    return type >= 0 && type < LEVL_SLIME_TYPE_COUNT ? names[type] : names[LEVL_SLIME_MOSSDROP];
+}
+
+const char *LevlSlimeTypeDisplayName(LevlSlimeType type)
+{
+    static const char *names[LEVL_SLIME_TYPE_COUNT] = {
+        "Mossdrop", "Honeykin", "Azure Puff", "Emberbud",
+        "Acidflare", "Prismcore", "Aurora Bloom", "Crownslime"
+    };
+    return type >= 0 && type < LEVL_SLIME_TYPE_COUNT ? names[type] : names[LEVL_SLIME_MOSSDROP];
+}
+
+Color LevlSlimeTypeColor(LevlSlimeType type)
+{
+    static const Color colors[LEVL_SLIME_TYPE_COUNT] = {
+        { 79, 222, 128, 255 }, { 244, 190, 67, 255 }, { 82, 181, 242, 255 }, { 241, 111, 65, 255 },
+        { 212, 232, 60, 255 }, { 183, 114, 255, 255 }, { 79, 234, 205, 255 }, { 255, 211, 72, 255 }
+    };
+    return type >= 0 && type < LEVL_SLIME_TYPE_COUNT ? colors[type] : colors[LEVL_SLIME_MOSSDROP];
+}
+
+bool LevlSlimeTypeFromName(const char *name, LevlSlimeType *outType)
+{
+    if (!name || !outType) return false;
+    for (int type = 0; type < LEVL_SLIME_TYPE_COUNT; ++type) {
+        if (strcmp(name, LevlSlimeTypeName((LevlSlimeType)type)) == 0) {
+            *outType = (LevlSlimeType)type;
+            return true;
+        }
+    }
+    return false;
 }
 
 LevlObject *LevlDocumentAdd(LevlDocument *document, LevlObjectType type)
@@ -121,6 +161,10 @@ LevlObject *LevlDocumentAdd(LevlDocument *document, LevlObjectType type)
         object->data.model.collidable = true;
     } else if (type == LEVL_OBJECT_EMPTY) {
         object->data.empty.scale = (Vector3){ 1.0f, 1.0f, 1.0f };
+    } else if (type == LEVL_OBJECT_SLIME_VOLUME) {
+        object->data.slimeVolume.size = (Vector3){ 12.0f, 4.0f, 12.0f };
+        object->data.slimeVolume.slimeCount = 4;
+        object->data.slimeVolume.slimeType = LEVL_SLIME_MOSSDROP;
     }
     document->dirty = true;
     return object;
@@ -201,6 +245,8 @@ static void LocalTransform(const LevlObject *object, Vector3 *position, Vector3 
         *scale = object->data.empty.scale;
     } else if (object->type == LEVL_OBJECT_BOX) {
         *rotation = object->data.box.rotation;
+    } else if (object->type == LEVL_OBJECT_SLIME_VOLUME) {
+        *rotation = object->data.slimeVolume.rotation;
     }
 }
 
@@ -396,7 +442,10 @@ bool LevlDocumentPlayerSpawnBlocked(const LevlDocument *document, Vector3 *block
 
 void LevlDocumentNew(LevlDocument *document)
 {
-    *document = (LevlDocument){ .nextId = 1 };
+    /* LevlDocument contains large mesh buffers. Avoid a giant temporary
+       compound literal here: on Windows/MinGW it can overflow the stack. */
+    memset(document, 0, sizeof(*document));
+    document->nextId = 1;
     CopyString(document->name, sizeof(document->name), "factory_level");
     CopyString(document->filePath, sizeof(document->filePath), "level.levl");
 
@@ -423,6 +472,10 @@ void LevlDocumentNew(LevlDocument *document)
     block->data.box.faceColors[3] = (Color){ 65, 221, 153, 255 };
     block->data.box.faceColors[4] = (Color){ 36, 163, 114, 255 };
     block->data.box.faceColors[5] = (Color){ 40, 177, 124, 255 };
+    LevlObject *slimeVolume = LevlDocumentAdd(document, LEVL_OBJECT_SLIME_VOLUME);
+    CopyString(slimeVolume->name, sizeof(slimeVolume->name), "starter_mossdrop_volume");
+    CopyString(slimeVolume->tag, sizeof(slimeVolume->tag), "slime_spawn");
+    slimeVolume->position = (Vector3){ 8.0f, 2.0f, 8.0f };
     document->dirty = false;
 }
 
@@ -515,6 +568,14 @@ static bool WriteDocument(const LevlDocument *document, const char *filePath, ch
                         object->data.empty.rotation.x, object->data.empty.rotation.y, object->data.empty.rotation.z,
                         object->data.empty.scale.x, object->data.empty.scale.y, object->data.empty.scale.z);
                 break;
+            case LEVL_OBJECT_SLIME_VOLUME: {
+                const LevlSlimeVolumeData *data = &object->data.slimeVolume;
+                fprintf(file, "SLIME_VOLUME %s %s %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %d %s\n", object->name, object->tag,
+                        object->position.x, object->position.y, object->position.z,
+                        data->size.x, data->size.y, data->size.z,
+                        data->rotation.x, data->rotation.y, data->rotation.z,
+                        data->slimeCount, LevlSlimeTypeName(data->slimeType));
+            } break;
         }
     }
     for (int i = 0; i < document->objectCount; ++i) if (document->objects[i].parentId > 0)
@@ -562,7 +623,9 @@ bool LevlDocumentLoad(LevlDocument *document, const char *filePath, char *messag
 {
     FILE *file = fopen(filePath, "r");
     if (!file) { SetMessage(message, messageSize, "Could not open .levl file"); return false; }
-    LevlDocument parsed = { .nextId = 1 };
+    static LevlDocument parsed;
+    memset(&parsed, 0, sizeof(parsed));
+    parsed.nextId = 1;
     char line[1024];
     bool headerSeen = false;
     LevlObject *lastBox = NULL;
@@ -667,6 +730,25 @@ bool LevlDocumentLoad(LevlDocument *document, const char *filePath, char *messag
             object = LevlDocumentAdd(&parsed, LEVL_OBJECT_MARKER);
             if (sscanf(line, "MARKER %31s %31s %f %f %f", object->name, object->tag,
                        &object->position.x, &object->position.y, &object->position.z) != 5) goto parse_error;
+        } else if (strncmp(line, "SLIME_VOLUME ", 13) == 0) {
+            char slimeName[32];
+            object = LevlDocumentAdd(&parsed, LEVL_OBJECT_SLIME_VOLUME);
+            int fields = sscanf(line, "SLIME_VOLUME %31s %31s %f %f %f %f %f %f %f %f %f %d %31s", object->name, object->tag,
+                       &object->position.x, &object->position.y, &object->position.z,
+                       &object->data.slimeVolume.size.x, &object->data.slimeVolume.size.y, &object->data.slimeVolume.size.z,
+                       &object->data.slimeVolume.rotation.x, &object->data.slimeVolume.rotation.y, &object->data.slimeVolume.rotation.z,
+                       &object->data.slimeVolume.slimeCount, slimeName);
+            if (fields != 13) {
+                fields = sscanf(line, "SLIME_VOLUME %31s %31s %f %f %f %f %f %f %d %31s", object->name, object->tag,
+                       &object->position.x, &object->position.y, &object->position.z,
+                       &object->data.slimeVolume.size.x, &object->data.slimeVolume.size.y, &object->data.slimeVolume.size.z,
+                       &object->data.slimeVolume.slimeCount, slimeName);
+                object->data.slimeVolume.rotation = (Vector3){ 0 };
+            }
+            if ((fields != 13 && fields != 10) ||
+                object->data.slimeVolume.size.x <= 0.0f || object->data.slimeVolume.size.y <= 0.0f || object->data.slimeVolume.size.z <= 0.0f ||
+                object->data.slimeVolume.slimeCount < 1 || object->data.slimeVolume.slimeCount > 64 ||
+                !LevlSlimeTypeFromName(slimeName, &object->data.slimeVolume.slimeType)) goto parse_error;
         } else if (strncmp(line, "EMPTY ", 6) == 0) {
             object = LevlDocumentAdd(&parsed, LEVL_OBJECT_EMPTY);
             if (sscanf(line, "EMPTY %31s %31s %f %f %f %f %f %f %f %f %f", object->name, object->tag,
@@ -730,7 +812,8 @@ bool LevlDocumentExportToGame(const LevlDocument *document, const char *gameLeve
         SetMessage(message, messageSize, "Could not create game's levels directory");
         return false;
     }
-    LevlDocument exportDocument = *document;
+    static LevlDocument exportDocument;
+    exportDocument = *document;
     LevlDocumentBakeHierarchy(&exportDocument);
     if (!WriteDocument(&exportDocument, gameLevelPath, message, messageSize)) return false;
 
@@ -757,7 +840,7 @@ bool LevlDocumentExportToGame(const LevlDocument *document, const char *gameLeve
         }
         UnloadDirectoryFiles(assets);
     }
-    SetMessage(message, messageSize, "Exported to Slimeworks Factory/levels/factory.levl");
+    SetMessage(message, messageSize, "Exported to ../Slimeworks-Factory/levels/factory.levl");
     return true;
 }
 
@@ -786,6 +869,10 @@ BoundingBox LevlObjectGetBounds(const LevlObject *object)
     } else if (object->type == LEVL_OBJECT_MARKER) {
         min = Vector3Subtract(object->position, (Vector3){ 0.35f, 0.35f, 0.35f });
         max = Vector3Add(object->position, (Vector3){ 0.35f, 0.35f, 0.35f });
+    } else if (object->type == LEVL_OBJECT_SLIME_VOLUME) {
+        Vector3 half = Vector3Scale(object->data.slimeVolume.size, 0.5f);
+        min = Vector3Subtract(object->position, half);
+        max = Vector3Add(object->position, half);
     }
     return (BoundingBox){ min, max };
 }
@@ -815,6 +902,9 @@ BoundingBox LevlObjectGetWorldBounds(const LevlDocument *document, const LevlObj
         localMin = Vector3Negate(half); localMax = half;
     } else if (object->type == LEVL_OBJECT_MARKER) {
         localMin = (Vector3){ -0.35f, -0.35f, -0.35f }; localMax = (Vector3){ 0.35f, 1.35f, 0.35f };
+    } else if (object->type == LEVL_OBJECT_SLIME_VOLUME) {
+        Vector3 half = Vector3Scale(object->data.slimeVolume.size, 0.5f);
+        localMin = Vector3Negate(half); localMax = half;
     }
     Vector3 position, rotation, scale;
     LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);

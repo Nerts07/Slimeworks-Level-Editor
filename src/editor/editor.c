@@ -16,6 +16,98 @@ static const Color EDITOR_PALETTE[] = {
     { 92, 215, 215, 255 }, { 240, 240, 245, 255 }
 };
 
+static Color GizmoAxisColor(int axis, int highlightedAxis)
+{
+    if (axis == highlightedAxis) return YELLOW;
+    return axis == 0 ? RED : (axis == 1 ? GREEN : BLUE);
+}
+
+static float ObjectGizmoSize(const LevlDocument *document, const LevlObject *object)
+{
+    BoundingBox bounds = LevlObjectGetWorldBounds(document, object);
+    float x = bounds.max.x - bounds.min.x;
+    float y = bounds.max.y - bounds.min.y;
+    float z = bounds.max.z - bounds.min.z;
+    return fmaxf(1.25f, fminf(fmaxf(x, fmaxf(y, z)) * 0.65f, 4.0f));
+}
+
+static void DrawGizmoOverlay(const Editor *editor, Vector3 origin, float size)
+{
+    Vector2 center = GetWorldToScreen(origin, editor->camera);
+    if (editor->gizmoMode == EDITOR_GIZMO_ROTATE) {
+        for (int axis = 0; axis < 3; ++axis) {
+            Vector2 previous = { 0 };
+            bool hasPrevious = false;
+            for (int segment = 0; segment <= 48; ++segment) {
+                float angle = (float)segment / 48.0f * 2.0f * PI;
+                Vector3 local = axis == 0 ? (Vector3){ 0, cosf(angle) * size, sinf(angle) * size } :
+                                (axis == 1 ? (Vector3){ cosf(angle) * size, 0, sinf(angle) * size } :
+                                             (Vector3){ cosf(angle) * size, sinf(angle) * size, 0 });
+                Vector2 current = GetWorldToScreen(Vector3Add(origin, local), editor->camera);
+                if (hasPrevious) DrawLineEx(previous, current, 4.0f, GizmoAxisColor(axis, editor->gizmoHighlightedAxis));
+                previous = current;
+                hasPrevious = true;
+            }
+        }
+    } else {
+        const Vector3 axes[3] = { { 1, 0, 0 }, { 0, 1, 0 }, { 0, 0, 1 } };
+        for (int axis = 0; axis < 3; ++axis) {
+            Vector2 end = GetWorldToScreen(Vector3Add(origin, Vector3Scale(axes[axis], size)), editor->camera);
+            Color color = GizmoAxisColor(axis, editor->gizmoHighlightedAxis);
+            DrawLineEx(center, end, 5.0f, color);
+            DrawCircleV(end, 8.0f, color);
+        }
+    }
+    DrawCircleV(center, 6.0f, WHITE);
+    DrawCircleLines((int)center.x, (int)center.y, 8.0f, Fade(BLACK, 0.8f));
+}
+
+#define GAME_LEVEL_EXPORT_PATH "../Slimeworks-Factory/levels/factory.levl"
+
+typedef struct DisplayResolution {
+    int width;
+    int height;
+} DisplayResolution;
+
+static const DisplayResolution DISPLAY_RESOLUTIONS[] = {
+    { 1280, 720 }, { 1600, 900 }, { 1920, 1080 }, { 2560, 1440 }
+};
+
+static void EditorApplyMonitorRefreshRate(void)
+{
+    int refreshRate = GetMonitorRefreshRate(GetCurrentMonitor());
+    if (refreshRate < 30) refreshRate = 60;
+    SetTargetFPS(refreshRate);
+}
+
+static void EditorHandleDisplayHotkeys(void)
+{
+    static int windowedWidth = 1280;
+    static int windowedHeight = 720;
+    if (IsKeyPressed(KEY_F11)) {
+        if (IsWindowFullscreen()) {
+            ToggleFullscreen();
+            SetWindowSize(windowedWidth, windowedHeight);
+        } else {
+            windowedWidth = GetScreenWidth();
+            windowedHeight = GetScreenHeight();
+            ToggleFullscreen();
+        }
+        EditorApplyMonitorRefreshRate();
+    }
+    if (IsKeyPressed(KEY_F10)) {
+        static unsigned int resolutionIndex = 0;
+        if (IsWindowFullscreen()) ToggleFullscreen();
+        ClearWindowState(FLAG_WINDOW_MAXIMIZED);
+        const DisplayResolution resolution = DISPLAY_RESOLUTIONS[resolutionIndex];
+        SetWindowSize(resolution.width, resolution.height);
+        windowedWidth = resolution.width;
+        windowedHeight = resolution.height;
+        resolutionIndex = (resolutionIndex + 1u) % (sizeof(DISPLAY_RESOLUTIONS) / sizeof(DISPLAY_RESOLUTIONS[0]));
+        EditorApplyMonitorRefreshRate();
+    }
+}
+
 static void SetStatus(Editor *editor, const char *text)
 {
     snprintf(editor->status, sizeof(editor->status), "%s", text);
@@ -288,6 +380,10 @@ static void ResizeSelected(Editor *editor, float amount)
     } else if (object->type == LEVL_OBJECT_MODEL) {
         float factor = amount > 0.0f ? 1.1f : 0.9f;
         object->data.model.scale = Vector3Scale(object->data.model.scale, factor);
+    } else if (object->type == LEVL_OBJECT_SLIME_VOLUME) {
+        object->data.slimeVolume.size.x = ClampMin(object->data.slimeVolume.size.x + amount * 2.0f, 1.0f);
+        object->data.slimeVolume.size.y = ClampMin(object->data.slimeVolume.size.y + amount, 1.0f);
+        object->data.slimeVolume.size.z = ClampMin(object->data.slimeVolume.size.z + amount * 2.0f, 1.0f);
     } else return;
     editor->document.dirty = true;
 }
@@ -463,8 +559,10 @@ static void BeginGizmoDrag(Editor *editor, int axis, Vector3 origin, float size)
     EditorGizmoDrag *drag = &editor->gizmoDrag;
     *drag = (EditorGizmoDrag){ .active = true, .axis = axis, .startMouse = GetMousePosition(),
         .startPosition = object->position, .startBoxSize = object->type == LEVL_OBJECT_BOX ? object->data.box.size : (Vector3){ 1, 1, 1 },
+        .startSlimeVolumeSize = object->type == LEVL_OBJECT_SLIME_VOLUME ? object->data.slimeVolume.size : (Vector3){ 1, 1, 1 },
         .startRotation = object->type == LEVL_OBJECT_BOX ? object->data.box.rotation :
-                         (object->type == LEVL_OBJECT_MODEL ? object->data.model.rotation : (Vector3){ 0 }),
+                         (object->type == LEVL_OBJECT_MODEL ? object->data.model.rotation :
+                          (object->type == LEVL_OBJECT_SLIME_VOLUME ? object->data.slimeVolume.rotation : (Vector3){ 0 })),
         .startModelScale = object->type == LEVL_OBJECT_MODEL ? object->data.model.scale : (Vector3){ 1, 1, 1 },
         .startPlatformSize = object->type == LEVL_OBJECT_PLATFORM ? object->data.platform.size : (Vector2){ 1, 1 },
         .startRampEnd = object->type == LEVL_OBJECT_RAMP ? object->data.ramp.end : (Vector3){ 0 },
@@ -514,8 +612,10 @@ static void UpdateGizmoDrag(Editor *editor)
         }
         if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation = editor->gizmoDrag.startRotation;
         if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation = editor->gizmoDrag.startRotation;
+        if (object->type == LEVL_OBJECT_SLIME_VOLUME) object->data.slimeVolume.rotation = editor->gizmoDrag.startRotation;
         if (object->type == LEVL_OBJECT_BOX) ((float *)&object->data.box.rotation)[axis] += angle;
         if (object->type == LEVL_OBJECT_MODEL) ((float *)&object->data.model.rotation)[axis] += angle;
+        if (object->type == LEVL_OBJECT_SLIME_VOLUME) ((float *)&object->data.slimeVolume.rotation)[axis] += angle;
         editor->document.dirty = true;
         return;
     }
@@ -552,6 +652,9 @@ static void UpdateGizmoDrag(Editor *editor)
         } else if (object->type == LEVL_OBJECT_MODEL) {
             object->data.model.scale = editor->gizmoDrag.startModelScale;
             ((float *)&object->data.model.scale)[axis] = ClampMin(((float *)&editor->gizmoDrag.startModelScale)[axis] * factor, 0.05f);
+        } else if (object->type == LEVL_OBJECT_SLIME_VOLUME) {
+            object->data.slimeVolume.size = editor->gizmoDrag.startSlimeVolumeSize;
+            ((float *)&object->data.slimeVolume.size)[axis] = ClampMin(((float *)&editor->gizmoDrag.startSlimeVolumeSize)[axis] * factor, 1.0f);
         } else if (object->type == LEVL_OBJECT_PLATFORM && axis != 1) {
             object->data.platform.size = editor->gizmoDrag.startPlatformSize;
             float *component = axis == 0 ? &object->data.platform.size.x : &object->data.platform.size.y;
@@ -701,7 +804,7 @@ static bool UpdateSharedShortcuts(Editor *editor)
     if (ShiftHeld() && IsKeyPressed(KEY_PERIOD)) { AdjustGridStep(editor, 1); return true; }
     if (IsKeyPressed(KEY_F6)) {
         char result[192];
-        LevlDocumentExportToGame(&editor->document, "../Slimeworks Factory/levels/factory.levl", result, (int)sizeof(result));
+        LevlDocumentExportToGame(&editor->document, GAME_LEVEL_EXPORT_PATH, result, (int)sizeof(result));
         SetStatus(editor, result);
         return true;
     }
@@ -740,6 +843,8 @@ static LevlObject MakeClipboardObject(const Editor *editor, const LevlObject *ob
         copy.data.ramp.width *= fmaxf(scale.x, scale.z);
     } else if (copy.type == LEVL_OBJECT_MARKER) {
         copy.position = position;
+    } else if (copy.type == LEVL_OBJECT_SLIME_VOLUME) {
+        copy.data.slimeVolume.size = Vector3Multiply(copy.data.slimeVolume.size, scale);
     }
     return copy;
 }
@@ -783,7 +888,7 @@ static void PasteObject(Editor *editor)
                 if (high < 0 || high > 15 || low < 0 || low > 15) { valid = false; break; }
                 bytes[byte] = (unsigned char)((high << 4) | low);
             }
-            if (valid && copy.type >= LEVL_OBJECT_BOX && copy.type <= LEVL_OBJECT_EMPTY) {
+            if (valid && copy.type >= LEVL_OBJECT_BOX && copy.type <= LEVL_OBJECT_SLIME_VOLUME) {
                 LevlObject *object = LevlDocumentAdd(&editor->document, copy.type);
                 if (!object) { SetStatus(editor, "Object limit reached (256)"); return; }
                 int newId = object->id;
@@ -857,7 +962,7 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
             SetStatus(editor, result);
             break;
         case EDITOR_UI_EXPORT:
-            LevlDocumentExportToGame(&editor->document, "../Slimeworks Factory/levels/factory.levl", result, (int)sizeof(result));
+        LevlDocumentExportToGame(&editor->document, GAME_LEVEL_EXPORT_PATH, result, (int)sizeof(result));
             SetStatus(editor, result);
             break;
         case EDITOR_UI_COPY: CopySelectedObject(editor); break;
@@ -889,6 +994,7 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
         case EDITOR_UI_ADD_PLATFORM: AddObject(editor, LEVL_OBJECT_PLATFORM); break;
         case EDITOR_UI_ADD_RAMP: AddObject(editor, LEVL_OBJECT_RAMP); break;
         case EDITOR_UI_ADD_MARKER: AddObject(editor, LEVL_OBJECT_MARKER); break;
+        case EDITOR_UI_ADD_SLIME_VOLUME: AddObject(editor, LEVL_OBJECT_SLIME_VOLUME); break;
         case EDITOR_UI_ADD_EMPTY: AddObject(editor, LEVL_OBJECT_EMPTY); break;
         case EDITOR_UI_IMPORT_MODEL: BeginTextInput(editor, EDITOR_TEXT_IMPORT); break;
         case EDITOR_UI_SELECT_VERTEX: EditorMeshEditSetSelectMode(&editor->meshEdit, EDITOR_MESH_SELECT_VERTEX); SetStatus(editor, "Vertex select mode"); break;
@@ -926,6 +1032,40 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
             break;
         case EDITOR_UI_CLEAR_PARENT:
             if (object && LevlObjectSetParent(&editor->document, object, NULL)) SetStatus(editor, "Parent cleared");
+            break;
+        case EDITOR_UI_VOLUME_COUNT_DOWN:
+            if (object && object->type == LEVL_OBJECT_SLIME_VOLUME) {
+                if (object->data.slimeVolume.slimeCount > 1) object->data.slimeVolume.slimeCount--;
+                editor->document.dirty = true;
+                SetStatus(editor, TextFormat("Slime count: %d", object->data.slimeVolume.slimeCount));
+            }
+            break;
+        case EDITOR_UI_VOLUME_COUNT_UP:
+            if (object && object->type == LEVL_OBJECT_SLIME_VOLUME) {
+                if (object->data.slimeVolume.slimeCount < 64) object->data.slimeVolume.slimeCount++;
+                editor->document.dirty = true;
+                SetStatus(editor, TextFormat("Slime count: %d", object->data.slimeVolume.slimeCount));
+            }
+            break;
+        case EDITOR_UI_VOLUME_TYPE_DOWN:
+        case EDITOR_UI_VOLUME_TYPE_UP:
+            if (object && object->type == LEVL_OBJECT_SLIME_VOLUME) {
+                int direction = action == EDITOR_UI_VOLUME_TYPE_UP ? 1 : -1;
+                object->data.slimeVolume.slimeType = (LevlSlimeType)((object->data.slimeVolume.slimeType + direction + LEVL_SLIME_TYPE_COUNT) % LEVL_SLIME_TYPE_COUNT);
+                editor->document.dirty = true;
+                SetStatus(editor, TextFormat("Slime type: %s", LevlSlimeTypeDisplayName(object->data.slimeVolume.slimeType)));
+            }
+            break;
+        case EDITOR_UI_VOLUME_SIZE_DOWN:
+        case EDITOR_UI_VOLUME_SIZE_UP:
+            if (object && object->type == LEVL_OBJECT_SLIME_VOLUME) {
+                float amount = action == EDITOR_UI_VOLUME_SIZE_UP ? 1.0f : -1.0f;
+                object->data.slimeVolume.size.x = ClampMin(object->data.slimeVolume.size.x + amount * 2.0f, 1.0f);
+                object->data.slimeVolume.size.y = ClampMin(object->data.slimeVolume.size.y + amount, 1.0f);
+                object->data.slimeVolume.size.z = ClampMin(object->data.slimeVolume.size.z + amount * 2.0f, 1.0f);
+                editor->document.dirty = true;
+                SetStatus(editor, TextFormat("Volume: %.1f x %.1f x %.1f", object->data.slimeVolume.size.x, object->data.slimeVolume.size.y, object->data.slimeVolume.size.z));
+            }
             break;
         case EDITOR_UI_SELECT_OBJECT:
             if (targetIndex < 0 || targetIndex >= editor->document.objectCount) break;
@@ -1017,6 +1157,7 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
     if (IsKeyPressed(KEY_P)) AddObject(editor, LEVL_OBJECT_PLATFORM);
     if (ShiftHeld() && IsKeyPressed(KEY_R)) AddObject(editor, LEVL_OBJECT_RAMP);
     if (IsKeyPressed(KEY_K)) AddObject(editor, LEVL_OBJECT_MARKER);
+    if (IsKeyPressed(KEY_V)) AddObject(editor, LEVL_OBJECT_SLIME_VOLUME);
     if (IsKeyPressed(KEY_I)) BeginTextInput(editor, EDITOR_TEXT_IMPORT);
     if (IsKeyPressed(KEY_F2)) BeginTextInput(editor, EDITOR_TEXT_NAME);
     if (IsKeyPressed(KEY_T)) BeginTextInput(editor, EDITOR_TEXT_TAG);
@@ -1027,6 +1168,30 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
 
     object = SelectedObject(editor);
     if (!object) return;
+    if (object->type == LEVL_OBJECT_SLIME_VOLUME) {
+        if (IsKeyPressed(KEY_PAGE_UP)) {
+            object->data.slimeVolume.slimeType = (LevlSlimeType)((object->data.slimeVolume.slimeType + 1) % LEVL_SLIME_TYPE_COUNT);
+            editor->document.dirty = true;
+            SetStatus(editor, TextFormat("Slime type: %s", LevlSlimeTypeDisplayName(object->data.slimeVolume.slimeType)));
+        }
+        if (IsKeyPressed(KEY_PAGE_DOWN)) {
+            object->data.slimeVolume.slimeType = (LevlSlimeType)((object->data.slimeVolume.slimeType + LEVL_SLIME_TYPE_COUNT - 1) % LEVL_SLIME_TYPE_COUNT);
+            editor->document.dirty = true;
+            SetStatus(editor, TextFormat("Slime type: %s", LevlSlimeTypeDisplayName(object->data.slimeVolume.slimeType)));
+        }
+        if (IsKeyPressed(KEY_EQUAL) || IsKeyPressed(KEY_KP_ADD)) {
+            if (object->data.slimeVolume.slimeCount < 64) object->data.slimeVolume.slimeCount++;
+            editor->document.dirty = true;
+            SetStatus(editor, TextFormat("Slime count: %d", object->data.slimeVolume.slimeCount));
+            return;
+        }
+        if (IsKeyPressed(KEY_MINUS) || IsKeyPressed(KEY_KP_SUBTRACT)) {
+            if (object->data.slimeVolume.slimeCount > 1) object->data.slimeVolume.slimeCount--;
+            editor->document.dirty = true;
+            SetStatus(editor, TextFormat("Slime count: %d", object->data.slimeVolume.slimeCount));
+            return;
+        }
+    }
     float step = editor->snapEnabled ? editor->gridStep : (ShiftHeld() ? 1.0f : 0.2f);
     Vector3 movement = { 0 };
     if (IsKeyDown(KEY_LEFT)) movement.x -= step;
@@ -1038,8 +1203,8 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
     if (Vector3Length(movement) > 0.0f) MoveSelected(editor, movement);
     if (IsKeyPressed(KEY_LEFT_BRACKET)) ResizeSelected(editor, editor->snapEnabled ? -editor->gridStep : -0.25f);
     if (IsKeyPressed(KEY_RIGHT_BRACKET)) ResizeSelected(editor, editor->snapEnabled ? editor->gridStep : 0.25f);
-    if (IsKeyPressed(KEY_COMMA)) { if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation.y -= editor->snapEnabled ? 15.0f : 5.0f; if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation.y -= editor->snapEnabled ? 15.0f : 5.0f; editor->document.dirty = true; }
-    if (IsKeyPressed(KEY_PERIOD)) { if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation.y += editor->snapEnabled ? 15.0f : 5.0f; if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation.y += editor->snapEnabled ? 15.0f : 5.0f; editor->document.dirty = true; }
+    if (IsKeyPressed(KEY_COMMA)) { if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation.y -= editor->snapEnabled ? 15.0f : 5.0f; if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation.y -= editor->snapEnabled ? 15.0f : 5.0f; if (object->type == LEVL_OBJECT_SLIME_VOLUME) object->data.slimeVolume.rotation.y -= editor->snapEnabled ? 15.0f : 5.0f; editor->document.dirty = true; }
+    if (IsKeyPressed(KEY_PERIOD)) { if (object->type == LEVL_OBJECT_BOX) object->data.box.rotation.y += editor->snapEnabled ? 15.0f : 5.0f; if (object->type == LEVL_OBJECT_MODEL) object->data.model.rotation.y += editor->snapEnabled ? 15.0f : 5.0f; if (object->type == LEVL_OBJECT_SLIME_VOLUME) object->data.slimeVolume.rotation.y += editor->snapEnabled ? 15.0f : 5.0f; editor->document.dirty = true; }
     if (object->type == LEVL_OBJECT_BOX) {
         if (IsKeyPressed(KEY_F)) editor->selectedFace = (editor->selectedFace + 1) % 6;
         if (IsKeyPressed(KEY_C)) CycleFaceColor(editor);
@@ -1150,8 +1315,11 @@ void EditorInit(Editor *editor)
 {
     *editor = (Editor){ .selectedIndex = 0, .mode = EDITOR_MODE_OBJECT, .showColliders = true,
                         .gizmoMode = EDITOR_GIZMO_MOVE, .gizmoHighlightedAxis = -1, .snapEnabled = true, .gridStep = 1.0f };
-    InitWindow(1280, 720, "Slimeworks Level Editor");
-    SetTargetFPS(60);
+    SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_FULLSCREEN_MODE);
+    int monitorWidth = GetMonitorWidth(0);
+    int monitorHeight = GetMonitorHeight(0);
+    InitWindow(monitorWidth, monitorHeight, "Slimeworks Level Editor");
+    EditorApplyMonitorRefreshRate();
     editor->camera = (Camera3D){
         .position = { 24.0f, 19.0f, 24.0f }, .target = { 0.0f, 0.0f, 0.0f },
         .up = { 0.0f, 1.0f, 0.0f }, .fovy = 50.0f, .projection = CAMERA_PERSPECTIVE
@@ -1166,6 +1334,7 @@ void EditorInit(Editor *editor)
 void EditorRun(Editor *editor)
 {
     while (!WindowShouldClose()) {
+        EditorHandleDisplayHotkeys();
         float deltaTime = fminf(GetFrameTime(), 0.05f);
         if (editor->statusSeconds > 0.0f) editor->statusSeconds -= deltaTime;
         if (editor->textMode != EDITOR_TEXT_NONE) UpdateTextInput(editor);
@@ -1181,12 +1350,20 @@ void EditorRun(Editor *editor)
         LevlObject *selected = SelectedObject(editor);
         if (editor->mode == EDITOR_MODE_EDIT && selected) {
             EditorMeshEditDraw(&editor->meshEdit, selected);
-            Vector3 gizmoOrigin = { 0 };
-            float gizmoSize = 0.0f;
-            if (EditGizmoOrigin(editor, selected, &gizmoOrigin, &gizmoSize))
-                EditorSceneDrawGizmoAt(gizmoOrigin, gizmoSize, editor->gizmoMode, editor->gizmoHighlightedAxis);
-        } else if (selected) EditorSceneDrawGizmo(&editor->document, selected, editor->gizmoMode, editor->gizmoHighlightedAxis);
+        }
         EndMode3D();
+        if (selected) {
+            if (editor->mode == EDITOR_MODE_EDIT) {
+                Vector3 gizmoOrigin = { 0 };
+                float gizmoSize = 0.0f;
+                if (EditGizmoOrigin(editor, selected, &gizmoOrigin, &gizmoSize))
+                    DrawGizmoOverlay(editor, gizmoOrigin, gizmoSize);
+            } else {
+                Vector3 gizmoOrigin, rotation, scale;
+                LevlObjectGetWorldTransform(&editor->document, selected, &gizmoOrigin, &rotation, &scale);
+                DrawGizmoOverlay(editor, gizmoOrigin, ObjectGizmoSize(&editor->document, selected));
+            }
+        }
         DrawOverlay(editor);
         EndDrawing();
     }

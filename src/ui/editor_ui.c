@@ -109,24 +109,25 @@ static void DrawLeftToolbar(const EditorUIState *state)
     DrawRectangle(0, EDITOR_UI_TOP_HEIGHT, EDITOR_UI_LEFT_WIDTH, GetScreenHeight() - EDITOR_UI_TOP_HEIGHT - EDITOR_UI_BOTTOM_HEIGHT, UI_PANEL);
     DrawRectangle(EDITOR_UI_LEFT_WIDTH - 1, EDITOR_UI_TOP_HEIGHT, 1, GetScreenHeight(), UI_BORDER);
     Label("TOOLS", 17, 74, 11, UI_MUTED);
-    UIButton buttons[16];
+    UIButton buttons[20];
     int count = 0;
     buttons[count++] = Button(12, 92, 80, 32, "BOX", EDITOR_UI_ADD_BOX, false, state->mode == EDITOR_MODE_OBJECT);
     buttons[count++] = Button(12, 130, 80, 32, "MESH", EDITOR_UI_ADD_MESH, false, state->mode == EDITOR_MODE_OBJECT);
     buttons[count++] = Button(12, 168, 80, 32, "PLATFORM", EDITOR_UI_ADD_PLATFORM, false, state->mode == EDITOR_MODE_OBJECT);
     buttons[count++] = Button(12, 206, 80, 32, "RAMP", EDITOR_UI_ADD_RAMP, false, state->mode == EDITOR_MODE_OBJECT);
-    buttons[count++] = Button(12, 244, 80, 32, "MARKER", EDITOR_UI_ADD_MARKER, false, state->mode == EDITOR_MODE_OBJECT);
-    buttons[count++] = Button(12, 282, 80, 32, "IMPORT", EDITOR_UI_IMPORT_MODEL, false, state->mode == EDITOR_MODE_OBJECT);
-    buttons[count++] = Button(12, 320, 80, 32, "EMPTY", EDITOR_UI_ADD_EMPTY, false, state->mode == EDITOR_MODE_OBJECT);
+    buttons[count++] = Button(12, 244, 80, 32, "SLIME VOL", EDITOR_UI_ADD_SLIME_VOLUME, false, state->mode == EDITOR_MODE_OBJECT);
+    buttons[count++] = Button(12, 282, 80, 32, "MARKER", EDITOR_UI_ADD_MARKER, false, state->mode == EDITOR_MODE_OBJECT);
+    buttons[count++] = Button(12, 320, 80, 32, "IMPORT", EDITOR_UI_IMPORT_MODEL, false, state->mode == EDITOR_MODE_OBJECT);
+    buttons[count++] = Button(12, 358, 80, 32, "EMPTY", EDITOR_UI_ADD_EMPTY, false, state->mode == EDITOR_MODE_OBJECT);
     if (state->mode == EDITOR_MODE_EDIT) {
-        Label("SELECT", 17, 340, 11, UI_MUTED);
-        buttons[count++] = Button(12, 358, 80, 32, "VERTEX", EDITOR_UI_SELECT_VERTEX, state->meshSelectMode == EDITOR_MESH_SELECT_VERTEX, true);
-        buttons[count++] = Button(12, 396, 80, 32, "EDGE", EDITOR_UI_SELECT_EDGE, state->meshSelectMode == EDITOR_MESH_SELECT_EDGE, true);
-        buttons[count++] = Button(12, 434, 80, 32, "FACE", EDITOR_UI_SELECT_FACE, state->meshSelectMode == EDITOR_MESH_SELECT_FACE, true);
-        buttons[count++] = Button(12, 480, 38, 30, "ALL", EDITOR_UI_SELECT_ALL, false, true);
-        buttons[count++] = Button(54, 480, 38, 30, "CLR", EDITOR_UI_CLEAR_SELECTION, false, true);
-        buttons[count++] = Button(12, 518, 80, 32, "SUBDIV +", EDITOR_UI_SUBDIVIDE, false, state->meshSelectMode == EDITOR_MESH_SELECT_FACE);
-        buttons[count++] = Button(12, 556, 80, 32, "SNAP ALL", EDITOR_UI_SNAP_MESH, false, true);
+        Label("SELECT", 17, 402, 11, UI_MUTED);
+        buttons[count++] = Button(12, 420, 80, 32, "VERTEX", EDITOR_UI_SELECT_VERTEX, state->meshSelectMode == EDITOR_MESH_SELECT_VERTEX, true);
+        buttons[count++] = Button(12, 458, 80, 32, "EDGE", EDITOR_UI_SELECT_EDGE, state->meshSelectMode == EDITOR_MESH_SELECT_EDGE, true);
+        buttons[count++] = Button(12, 496, 80, 32, "FACE", EDITOR_UI_SELECT_FACE, state->meshSelectMode == EDITOR_MESH_SELECT_FACE, true);
+        buttons[count++] = Button(12, 542, 38, 30, "ALL", EDITOR_UI_SELECT_ALL, false, true);
+        buttons[count++] = Button(54, 542, 38, 30, "CLR", EDITOR_UI_CLEAR_SELECTION, false, true);
+        buttons[count++] = Button(12, 580, 80, 32, "SUBDIV +", EDITOR_UI_SUBDIVIDE, false, state->meshSelectMode == EDITOR_MESH_SELECT_FACE);
+        buttons[count++] = Button(12, 618, 80, 32, "SNAP ALL", EDITOR_UI_SNAP_MESH, false, true);
     }
     for (int i = 0; i < count; ++i) DrawButton(buttons[i]);
 }
@@ -155,7 +156,23 @@ static void DrawInspectorPanel(const EditorUIState *state)
     UIButton buttons[14];
     int count = 0;
     int y = 246;
-    if (object->type == LEVL_OBJECT_MESH) {
+    if (object->type == LEVL_OBJECT_SLIME_VOLUME) {
+        const LevlSlimeVolumeData *data = &object->data.slimeVolume;
+        Label(TextFormat("%s  ·  %s", data->slimeType >= LEVL_SLIME_ACIDFLARE ? "PREMIUM" : "BASIC",
+                         LevlSlimeTypeDisplayName(data->slimeType)), (int)panel.x + 18, y, 13, LevlSlimeTypeColor(data->slimeType));
+        y += 20;
+        Label(TextFormat("Volume %.1f × %.1f × %.1f  ·  %d slimes", data->size.x, data->size.y, data->size.z, data->slimeCount),
+              (int)panel.x + 18, y, 13, UI_MUTED);
+        y += 20;
+        buttons[count++] = Button(panel.x + 18, y, 74, 30, "COUNT -", EDITOR_UI_VOLUME_COUNT_DOWN, false, true);
+        buttons[count++] = Button(panel.x + 98, y, 74, 30, "COUNT +", EDITOR_UI_VOLUME_COUNT_UP, false, true);
+        buttons[count++] = Button(panel.x + 184, y, 64, 30, "TYPE -", EDITOR_UI_VOLUME_TYPE_DOWN, false, true);
+        buttons[count++] = Button(panel.x + 254, y, 70, 30, "TYPE +", EDITOR_UI_VOLUME_TYPE_UP, false, true);
+        y += 38;
+        buttons[count++] = Button(panel.x + 18, y, 156, 30, "VOLUME -", EDITOR_UI_VOLUME_SIZE_DOWN, false, true);
+        buttons[count++] = Button(panel.x + 184, y, 140, 30, "VOLUME +", EDITOR_UI_VOLUME_SIZE_UP, false, true);
+        y += 40;
+    } else if (object->type == LEVL_OBJECT_MESH) {
         buttons[count++] = Button(panel.x + 18, y, 156, 34, state->mode == EDITOR_MODE_EDIT ? "EXIT EDIT MODE" : "EDIT MESH", EDITOR_UI_TOGGLE_EDIT, state->mode == EDITOR_MODE_EDIT, true);
         buttons[count++] = Button(panel.x + 184, y, 140, 34, "TOGGLE COLLISION", EDITOR_UI_TOGGLE_COLLISION, object->data.mesh.collidable, true);
         y += 44;
@@ -251,7 +268,15 @@ EditorUIAction EditorUIHandleMouse(const EditorUIState *state, Vector2 mouse, in
         int count = 0;
         const LevlObject *object = state->selectedObject;
         int y = 246;
-        if (object && object->type == LEVL_OBJECT_MESH) {
+        if (object && object->type == LEVL_OBJECT_SLIME_VOLUME) {
+            buttons[count++] = Button(panel.x + 18, y + 40, 74, 30, "", EDITOR_UI_VOLUME_COUNT_DOWN, false, true);
+            buttons[count++] = Button(panel.x + 98, y + 40, 74, 30, "", EDITOR_UI_VOLUME_COUNT_UP, false, true);
+            buttons[count++] = Button(panel.x + 184, y + 40, 64, 30, "", EDITOR_UI_VOLUME_TYPE_DOWN, false, true);
+            buttons[count++] = Button(panel.x + 254, y + 40, 70, 30, "", EDITOR_UI_VOLUME_TYPE_UP, false, true);
+            buttons[count++] = Button(panel.x + 18, y + 78, 156, 30, "", EDITOR_UI_VOLUME_SIZE_DOWN, false, true);
+            buttons[count++] = Button(panel.x + 184, y + 78, 140, 30, "", EDITOR_UI_VOLUME_SIZE_UP, false, true);
+            y += 118;
+        } else if (object && object->type == LEVL_OBJECT_MESH) {
             buttons[count++] = Button(panel.x + 18, y, 156, 34, "", EDITOR_UI_TOGGLE_EDIT, false, true);
             buttons[count++] = Button(panel.x + 184, y, 140, 34, "", EDITOR_UI_TOGGLE_COLLISION, false, true);
             y += 44 + 24;
@@ -294,23 +319,24 @@ EditorUIAction EditorUIHandleMouse(const EditorUIState *state, Vector2 mouse, in
         return EDITOR_UI_NONE;
     }
     if (mouse.x < EDITOR_UI_LEFT_WIDTH && mouse.y >= EDITOR_UI_TOP_HEIGHT) {
-        UIButton buttons[16];
+        UIButton buttons[20];
         int count = 0;
         buttons[count++] = Button(12, 92, 80, 32, "", EDITOR_UI_ADD_BOX, false, state->mode == EDITOR_MODE_OBJECT);
         buttons[count++] = Button(12, 130, 80, 32, "", EDITOR_UI_ADD_MESH, false, state->mode == EDITOR_MODE_OBJECT);
         buttons[count++] = Button(12, 168, 80, 32, "", EDITOR_UI_ADD_PLATFORM, false, state->mode == EDITOR_MODE_OBJECT);
         buttons[count++] = Button(12, 206, 80, 32, "", EDITOR_UI_ADD_RAMP, false, state->mode == EDITOR_MODE_OBJECT);
-        buttons[count++] = Button(12, 244, 80, 32, "", EDITOR_UI_ADD_MARKER, false, state->mode == EDITOR_MODE_OBJECT);
-        buttons[count++] = Button(12, 282, 80, 32, "", EDITOR_UI_IMPORT_MODEL, false, state->mode == EDITOR_MODE_OBJECT);
-        buttons[count++] = Button(12, 320, 80, 32, "", EDITOR_UI_ADD_EMPTY, false, state->mode == EDITOR_MODE_OBJECT);
+        buttons[count++] = Button(12, 244, 80, 32, "", EDITOR_UI_ADD_SLIME_VOLUME, false, state->mode == EDITOR_MODE_OBJECT);
+        buttons[count++] = Button(12, 282, 80, 32, "", EDITOR_UI_ADD_MARKER, false, state->mode == EDITOR_MODE_OBJECT);
+        buttons[count++] = Button(12, 320, 80, 32, "", EDITOR_UI_IMPORT_MODEL, false, state->mode == EDITOR_MODE_OBJECT);
+        buttons[count++] = Button(12, 358, 80, 32, "", EDITOR_UI_ADD_EMPTY, false, state->mode == EDITOR_MODE_OBJECT);
         if (state->mode == EDITOR_MODE_EDIT) {
-            buttons[count++] = Button(12, 358, 80, 32, "", EDITOR_UI_SELECT_VERTEX, false, true);
-            buttons[count++] = Button(12, 396, 80, 32, "", EDITOR_UI_SELECT_EDGE, false, true);
-            buttons[count++] = Button(12, 434, 80, 32, "", EDITOR_UI_SELECT_FACE, false, true);
-            buttons[count++] = Button(12, 480, 38, 30, "", EDITOR_UI_SELECT_ALL, false, true);
-            buttons[count++] = Button(54, 480, 38, 30, "", EDITOR_UI_CLEAR_SELECTION, false, true);
-            buttons[count++] = Button(12, 518, 80, 32, "", EDITOR_UI_SUBDIVIDE, false, state->meshSelectMode == EDITOR_MESH_SELECT_FACE);
-            buttons[count++] = Button(12, 556, 80, 32, "", EDITOR_UI_SNAP_MESH, false, true);
+            buttons[count++] = Button(12, 420, 80, 32, "", EDITOR_UI_SELECT_VERTEX, false, true);
+            buttons[count++] = Button(12, 458, 80, 32, "", EDITOR_UI_SELECT_EDGE, false, true);
+            buttons[count++] = Button(12, 496, 80, 32, "", EDITOR_UI_SELECT_FACE, false, true);
+            buttons[count++] = Button(12, 542, 38, 30, "", EDITOR_UI_SELECT_ALL, false, true);
+            buttons[count++] = Button(54, 542, 38, 30, "", EDITOR_UI_CLEAR_SELECTION, false, true);
+            buttons[count++] = Button(12, 580, 80, 32, "", EDITOR_UI_SUBDIVIDE, false, state->meshSelectMode == EDITOR_MESH_SELECT_FACE);
+            buttons[count++] = Button(12, 618, 80, 32, "", EDITOR_UI_SNAP_MESH, false, true);
         }
         return HitButtons(buttons, count, mouse);
     }

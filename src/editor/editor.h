@@ -24,6 +24,7 @@ typedef struct EditorGizmoDrag {
     Vector2 startMouse;
     Vector3 startPosition;
     Vector3 startBoxSize;
+    Vector3 startSlimeVolumeSize;
     Vector3 startRotation;
     Vector3 startModelScale;
     Vector2 startPlatformSize;
