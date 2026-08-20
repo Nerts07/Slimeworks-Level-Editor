@@ -1,6 +1,7 @@
 #include "editor.h"
 
 #include "../import/model_import.h"
+#include "../ui/editor_ui.h"
 
 #include <ctype.h>
 #include <float.h>
@@ -51,6 +52,20 @@ static LevlObject *SelectedObject(Editor *editor)
 {
     if (editor->selectedIndex < 0 || editor->selectedIndex >= editor->document.objectCount) return NULL;
     return &editor->document.objects[editor->selectedIndex];
+}
+
+static EditorUIState MakeUIState(const Editor *editor)
+{
+    const LevlObject *object = editor->selectedIndex >= 0 && editor->selectedIndex < editor->document.objectCount ?
+                               &editor->document.objects[editor->selectedIndex] : NULL;
+    return (EditorUIState){
+        .mode = editor->mode, .gizmoMode = editor->gizmoMode, .meshSelectMode = editor->meshEdit.selectMode,
+        .selectedObject = object, .snapEnabled = editor->snapEnabled, .showColliders = editor->showColliders,
+        .dirty = editor->document.dirty, .playerSpawnBlocked = editor->playerSpawnBlocked,
+        .meshSelectionCount = object ? EditorMeshEditSelectionCount(&editor->meshEdit, object) : 0,
+        .gridStep = editor->gridStep, .cameraMode = EditorNavigationModeName(&editor->navigation),
+        .status = editor->status, .statusSeconds = editor->statusSeconds
+    };
 }
 
 static bool ShiftHeld(void)
@@ -152,7 +167,7 @@ static void AddObject(Editor *editor, LevlObjectType type)
 
 static void SelectAtMouse(Editor *editor)
 {
-    if (GetMousePosition().x >= GetScreenWidth() - 360) return;
+    if (!EditorUIIsViewportPoint(GetMousePosition())) return;
     Ray ray = GetScreenToWorldRay(GetMousePosition(), editor->camera);
     float nearest = FLT_MAX;
     int found = -1;
@@ -600,8 +615,103 @@ static bool UpdateSharedShortcuts(Editor *editor)
     return false;
 }
 
+static void ApplyUIAction(Editor *editor, EditorUIAction action)
+{
+    LevlObject *object = SelectedObject(editor);
+    char result[192];
+    switch (action) {
+        case EDITOR_UI_NEW:
+            EditorSceneUnloadModels(editor->modelCache, LEVL_MAX_OBJECTS);
+            memset(editor->modelCache, 0, sizeof(editor->modelCache));
+            LevlDocumentNew(&editor->document);
+            editor->selectedIndex = 0;
+            editor->mode = EDITOR_MODE_OBJECT;
+            EditorMeshEditReset(&editor->meshEdit);
+            SetStatus(editor, "New starter level created");
+            break;
+        case EDITOR_UI_SAVE:
+            LevlDocumentSave(&editor->document, "level.levl", result, (int)sizeof(result));
+            SetStatus(editor, result);
+            break;
+        case EDITOR_UI_EXPORT:
+            LevlDocumentExportToGame(&editor->document, "../Slimeworks Factory/levels/factory.levl", result, (int)sizeof(result));
+            SetStatus(editor, result);
+            break;
+        case EDITOR_UI_SET_OBJECT_MODE:
+            if (editor->mode == EDITOR_MODE_EDIT) ToggleEditMode(editor);
+            break;
+        case EDITOR_UI_SET_EDIT_MODE:
+            if (editor->mode == EDITOR_MODE_OBJECT) ToggleEditMode(editor);
+            break;
+        case EDITOR_UI_TOGGLE_EDIT: ToggleEditMode(editor); break;
+        case EDITOR_UI_SET_MOVE: SetGizmoMode(editor, EDITOR_GIZMO_MOVE); break;
+        case EDITOR_UI_SET_ROTATE: SetGizmoMode(editor, EDITOR_GIZMO_ROTATE); break;
+        case EDITOR_UI_SET_SCALE: SetGizmoMode(editor, EDITOR_GIZMO_SCALE); break;
+        case EDITOR_UI_TOGGLE_SNAP:
+            editor->snapEnabled = !editor->snapEnabled;
+            SetStatus(editor, editor->snapEnabled ? "Grid snapping enabled" : "Grid snapping disabled");
+            break;
+        case EDITOR_UI_TOGGLE_CAMERA:
+            EditorNavigationToggleMode(&editor->navigation, &editor->camera);
+            SetStatus(editor, editor->navigation.mode == EDITOR_NAVIGATION_FREE ? "Free camera mode enabled" : "Orbit camera mode enabled");
+            break;
+        case EDITOR_UI_TOGGLE_COLLIDERS:
+            editor->showColliders = !editor->showColliders;
+            SetStatus(editor, editor->showColliders ? "Collision overlays enabled" : "Collision overlays hidden");
+            break;
+        case EDITOR_UI_ADD_BOX: AddObject(editor, LEVL_OBJECT_BOX); break;
+        case EDITOR_UI_ADD_MESH: AddObject(editor, LEVL_OBJECT_MESH); break;
+        case EDITOR_UI_ADD_PLATFORM: AddObject(editor, LEVL_OBJECT_PLATFORM); break;
+        case EDITOR_UI_ADD_RAMP: AddObject(editor, LEVL_OBJECT_RAMP); break;
+        case EDITOR_UI_ADD_MARKER: AddObject(editor, LEVL_OBJECT_MARKER); break;
+        case EDITOR_UI_IMPORT_MODEL: BeginTextInput(editor, EDITOR_TEXT_IMPORT); break;
+        case EDITOR_UI_SELECT_VERTEX: EditorMeshEditSetSelectMode(&editor->meshEdit, EDITOR_MESH_SELECT_VERTEX); SetStatus(editor, "Vertex select mode"); break;
+        case EDITOR_UI_SELECT_EDGE: EditorMeshEditSetSelectMode(&editor->meshEdit, EDITOR_MESH_SELECT_EDGE); SetStatus(editor, "Edge select mode"); break;
+        case EDITOR_UI_SELECT_FACE: EditorMeshEditSetSelectMode(&editor->meshEdit, EDITOR_MESH_SELECT_FACE); SetStatus(editor, "Face select mode"); break;
+        case EDITOR_UI_SELECT_ALL:
+            if (object) EditorMeshEditSelectAll(&editor->meshEdit, object);
+            SetStatus(editor, "Selected all mesh elements");
+            break;
+        case EDITOR_UI_CLEAR_SELECTION: EditorMeshEditClear(&editor->meshEdit); SetStatus(editor, "Mesh selection cleared"); break;
+        case EDITOR_UI_SUBDIVIDE:
+            if (object && EditorMeshEditSubdivideFaces(&editor->meshEdit, object)) {
+                editor->document.dirty = true;
+                SetStatus(editor, "Selected faces subdivided");
+            } else SetStatus(editor, "Select faces before subdivision");
+            break;
+        case EDITOR_UI_TOGGLE_COLLISION: ToggleCollision(editor); break;
+        case EDITOR_UI_APPLY_SCALE: ApplySelectedScale(editor); break;
+        case EDITOR_UI_FACE_COLOR: CycleFaceColor(editor); break;
+        case EDITOR_UI_RENAME: BeginTextInput(editor, EDITOR_TEXT_NAME); break;
+        case EDITOR_UI_SET_TAG: BeginTextInput(editor, EDITOR_TEXT_TAG); break;
+        case EDITOR_UI_BOX_BEVEL_UP:
+            if (object && object->type == LEVL_OBJECT_BOX) { object->data.box.bevel += 0.05f; editor->document.dirty = true; SetStatus(editor, "Bevel increased"); }
+            break;
+        case EDITOR_UI_BOX_BEVEL_DOWN:
+            if (object && object->type == LEVL_OBJECT_BOX) { object->data.box.bevel = ClampMin(object->data.box.bevel - 0.05f, 0.0f); editor->document.dirty = true; SetStatus(editor, "Bevel decreased"); }
+            break;
+        case EDITOR_UI_BOX_SUBDIVISION_UP:
+            if (object && object->type == LEVL_OBJECT_BOX && object->data.box.subdivisions < 16) { object->data.box.subdivisions++; editor->document.dirty = true; SetStatus(editor, "Subdivision increased"); }
+            break;
+        case EDITOR_UI_BOX_SUBDIVISION_DOWN:
+            if (object && object->type == LEVL_OBJECT_BOX && object->data.box.subdivisions > 1) { object->data.box.subdivisions--; editor->document.dirty = true; SetStatus(editor, "Subdivision decreased"); }
+            break;
+        case EDITOR_UI_DELETE:
+            if (LevlDocumentRemove(&editor->document, editor->selectedIndex)) {
+                if (editor->selectedIndex >= editor->document.objectCount) editor->selectedIndex = editor->document.objectCount - 1;
+                SetStatus(editor, "Object removed");
+            }
+            break;
+        default: break;
+    }
+}
+
 static void UpdateEditorControls(Editor *editor, float deltaTime)
 {
+    EditorUIState uiState = MakeUIState(editor);
+    EditorUIAction uiAction = EditorUIHandleMouse(&uiState, GetMousePosition());
+    if (uiAction != EDITOR_UI_NONE) { ApplyUIAction(editor, uiAction); return; }
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !EditorUIIsViewportPoint(GetMousePosition())) return;
     if (EditorNavigationUpdate(&editor->navigation, &editor->camera, deltaTime)) return;
     if (EditorNavigationHandleViewShortcuts(&editor->navigation, &editor->camera)) {
         SetStatus(editor, "Orthographic view snapped; orbit to return to perspective");
@@ -771,6 +881,8 @@ static void DrawOverlay(const Editor *editor)
         DrawText(TextFormat("%s: %s_", prompt, editor->textBuffer), 44, GetScreenHeight() - 72, 20, WHITE);
     }
     DrawInspector(editor);
+    EditorUIState state = MakeUIState(editor);
+    EditorUIDraw(&state);
 }
 
 void EditorInit(Editor *editor)
