@@ -173,6 +173,109 @@ BoundingBox LevlMeshGetBounds(const LevlObject *object)
     return bounds;
 }
 
+static bool PointInsideMesh(const LevlObject *object, Vector3 point)
+{
+    const LevlMeshData *mesh = &object->data.mesh;
+    Vector3 local = Vector3Subtract(point, object->position);
+    BoundingBox bounds = LevlMeshGetBounds(object);
+    if (point.x <= bounds.min.x + 0.001f || point.x >= bounds.max.x - 0.001f ||
+        point.y <= bounds.min.y + 0.001f || point.y >= bounds.max.y - 0.001f ||
+        point.z <= bounds.min.z + 0.001f || point.z >= bounds.max.z - 0.001f) return false;
+    Ray ray = { .position = local, .direction = Vector3Normalize((Vector3){ 1.0f, 0.173f, 0.317f }) };
+    int intersections = 0;
+    for (int faceIndex = 0; faceIndex < mesh->faceCount; ++faceIndex) {
+        const LevlMeshFace *face = &mesh->faces[faceIndex];
+        for (int vertex = 1; vertex + 1 < face->vertexCount; ++vertex) {
+            RayCollision hit = GetRayCollisionTriangle(ray, mesh->vertices[face->vertices[0]],
+                                                        mesh->vertices[face->vertices[vertex]],
+                                                        mesh->vertices[face->vertices[vertex + 1]]);
+            if (hit.hit && hit.distance > 0.0001f) intersections++;
+        }
+    }
+    return (intersections & 1) != 0;
+}
+
+static bool PointInsideModel(const LevlDocument *document, const LevlObject *object, Vector3 point)
+{
+    char path[512];
+    if (object->data.model.assetPath[0] == '/') snprintf(path, sizeof(path), "%s", object->data.model.assetPath);
+    else {
+        const char *slash = strrchr(document->filePath, '/');
+        if (slash) {
+            size_t directoryLength = (size_t)(slash - document->filePath);
+            if (directoryLength >= sizeof(path)) directoryLength = sizeof(path) - 1;
+            memcpy(path, document->filePath, directoryLength);
+            path[directoryLength] = '\0';
+            snprintf(path + directoryLength, sizeof(path) - directoryLength, "/%s", object->data.model.assetPath);
+        } else snprintf(path, sizeof(path), "%s", object->data.model.assetPath);
+    }
+    Model model = LoadModel(path);
+    if (!IsModelValid(model)) return false;
+    Matrix transform = MatrixMultiply(MatrixScale(object->data.model.scale.x, object->data.model.scale.y, object->data.model.scale.z),
+                                      MatrixRotateXYZ(Vector3Scale(object->data.model.rotation, DEG2RAD)));
+    Ray ray = { .position = point, .direction = Vector3Normalize((Vector3){ 1.0f, 0.173f, 0.317f }) };
+    int intersections = 0;
+    for (int meshIndex = 0; meshIndex < model.meshCount; ++meshIndex) {
+        const Mesh *mesh = &model.meshes[meshIndex];
+        for (int triangle = 0; triangle < mesh->triangleCount; ++triangle) {
+            int indices[3] = {
+                mesh->indices ? mesh->indices[triangle * 3] : triangle * 3,
+                mesh->indices ? mesh->indices[triangle * 3 + 1] : triangle * 3 + 1,
+                mesh->indices ? mesh->indices[triangle * 3 + 2] : triangle * 3 + 2
+            };
+            Vector3 vertices[3];
+            for (int corner = 0; corner < 3; ++corner) {
+                Vector3 local = { mesh->vertices[indices[corner] * 3], mesh->vertices[indices[corner] * 3 + 1], mesh->vertices[indices[corner] * 3 + 2] };
+                vertices[corner] = Vector3Add(object->position, Vector3Transform(local, transform));
+            }
+            RayCollision hit = GetRayCollisionTriangle(ray, vertices[0], vertices[1], vertices[2]);
+            if (hit.hit && hit.distance > 0.0001f) intersections++;
+        }
+    }
+    UnloadModel(model);
+    return (intersections & 1) != 0;
+}
+
+bool LevlDocumentPlayerSpawnBlocked(const LevlDocument *document, Vector3 *blockedSpawn, bool inspectModelAssets)
+{
+    if (!document) return false;
+    for (int markerIndex = 0; markerIndex < document->objectCount; ++markerIndex) {
+        const LevlObject *marker = &document->objects[markerIndex];
+        if (marker->type != LEVL_OBJECT_MARKER || strcmp(marker->tag, "player_spawn") != 0) continue;
+        for (int objectIndex = 0; objectIndex < document->objectCount; ++objectIndex) {
+            const LevlObject *object = &document->objects[objectIndex];
+            if (object == marker) continue;
+            if (object->type == LEVL_OBJECT_MESH && object->data.mesh.collidable && PointInsideMesh(object, marker->position)) {
+                if (blockedSpawn) *blockedSpawn = marker->position;
+                return true;
+            }
+            if (object->type == LEVL_OBJECT_BOX && object->data.box.collidable) {
+                BoundingBox bounds = LevlObjectGetBounds(object);
+                if (marker->position.x > bounds.min.x && marker->position.x < bounds.max.x &&
+                    marker->position.y > bounds.min.y && marker->position.y < bounds.max.y &&
+                    marker->position.z > bounds.min.z && marker->position.z < bounds.max.z) {
+                    if (blockedSpawn) *blockedSpawn = marker->position;
+                    return true;
+                }
+            }
+            if (inspectModelAssets && object->type == LEVL_OBJECT_MODEL && object->data.model.collidable) {
+                if (PointInsideModel(document, object, marker->position)) {
+                    if (blockedSpawn) *blockedSpawn = marker->position;
+                    return true;
+                }
+                BoundingBox bounds = LevlObjectGetBounds(object);
+                if (marker->position.x > bounds.min.x && marker->position.x < bounds.max.x &&
+                    marker->position.y > bounds.min.y && marker->position.y < bounds.max.y &&
+                    marker->position.z > bounds.min.z && marker->position.z < bounds.max.z) {
+                    if (blockedSpawn) *blockedSpawn = marker->position;
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
 void LevlDocumentNew(LevlDocument *document)
 {
     *document = (LevlDocument){ .nextId = 1 };
@@ -473,6 +576,11 @@ static bool CopyFileContents(const char *sourcePath, const char *destinationPath
 
 bool LevlDocumentExportToGame(const LevlDocument *document, const char *gameLevelPath, char *message, int messageSize)
 {
+    Vector3 blockedSpawn;
+    if (LevlDocumentPlayerSpawnBlocked(document, &blockedSpawn, true)) {
+        SetMessage(message, messageSize, "Export blocked: player_spawn is inside a collision");
+        return false;
+    }
     char gameDirectory[LEVL_PATH_LENGTH];
     GetDirectory(gameLevelPath, gameDirectory, sizeof(gameDirectory));
     if (MakeDirectory(gameDirectory) != 0 && !DirectoryExists(gameDirectory)) {

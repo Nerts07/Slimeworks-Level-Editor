@@ -672,6 +672,9 @@ static void DrawInspector(const Editor *editor)
     DrawTextLine(TextFormat("Grid %.3g | snap %s", editor->gridStep, editor->snapEnabled ? "on" : "off"), x, &y, 14, editor->snapEnabled ? LIME : LIGHTGRAY);
     DrawTextLine(TextFormat("Camera: %s", EditorNavigationModeName(&editor->navigation)), x, &y, 14, LIGHTGRAY);
     DrawTextLine(TextFormat("Mode: %s", EditorModeName(editor->mode)), x, &y, 14, editor->mode == EDITOR_MODE_EDIT ? YELLOW : LIGHTGRAY);
+    Vector3 blockedSpawn;
+    if (LevlDocumentPlayerSpawnBlocked(&editor->document, &blockedSpawn, false))
+        DrawTextLine("ERROR: player_spawn inside collision", x, &y, 14, RED);
     y += 8;
     const LevlObject *object = editor->selectedIndex >= 0 && editor->selectedIndex < editor->document.objectCount ? &editor->document.objects[editor->selectedIndex] : NULL;
     if (object) {
@@ -698,11 +701,11 @@ static void DrawInspector(const Editor *editor)
                 DrawTextLine(TextFormat("Select: %s | %d selected", EditorMeshSelectModeName(editor->meshEdit.selectMode),
                                         EditorMeshEditSelectionCount(&editor->meshEdit, object)), x, &y, 15, YELLOW);
             }
-            DrawTextLine(object->data.mesh.collidable ? "Collision: generated from mesh bounds" : "Collision: disabled", x, &y, 15,
+            DrawTextLine(object->data.mesh.collidable ? "Collision: generated from mesh polygons" : "Collision: disabled", x, &y, 15,
                          object->data.mesh.collidable ? LIME : ORANGE);
         } else if (object->type == LEVL_OBJECT_MODEL) {
             DrawTextLine(TextFormat("Asset: %s", object->data.model.assetPath), x, &y, 14, LIGHTGRAY);
-            DrawTextLine(object->data.model.collidable ? "Collision: generated from bounds" : "Collision: disabled", x, &y, 15, object->data.model.collidable ? LIME : ORANGE);
+            DrawTextLine(object->data.model.collidable ? "Collision: generated from model polygons" : "Collision: disabled", x, &y, 15, object->data.model.collidable ? LIME : ORANGE);
         } else if (object->type == LEVL_OBJECT_MARKER) {
             DrawTextLine("Invisible in game; available by tag", x, &y, 15, YELLOW);
         }

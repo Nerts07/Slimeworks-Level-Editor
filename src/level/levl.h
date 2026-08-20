@@ -104,5 +104,6 @@ const char *LevlObjectTypeName(LevlObjectType type);
 bool LevlObjectConvertBoxToMesh(LevlObject *object);
 int LevlMeshBuildEdges(const LevlMeshData *mesh, LevlMeshEdge *edges, int maxEdges);
 BoundingBox LevlMeshGetBounds(const LevlObject *object);
+bool LevlDocumentPlayerSpawnBlocked(const LevlDocument *document, Vector3 *blockedSpawn, bool inspectModelAssets);
 
 #endif

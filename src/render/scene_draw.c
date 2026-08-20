@@ -76,6 +76,49 @@ static void DrawEditableMesh(const LevlObject *object)
     }
 }
 
+static void DrawMeshCollision(const LevlObject *object)
+{
+    const LevlMeshData *mesh = &object->data.mesh;
+    for (int faceIndex = 0; faceIndex < mesh->faceCount; ++faceIndex) {
+        const LevlMeshFace *face = &mesh->faces[faceIndex];
+        if (face->vertexCount < 2) continue;
+        for (int vertex = 0; vertex < face->vertexCount; ++vertex) {
+            int next = (vertex + 1) % face->vertexCount;
+            Vector3 a = Vector3Add(object->position, mesh->vertices[face->vertices[vertex]]);
+            Vector3 b = Vector3Add(object->position, mesh->vertices[face->vertices[next]]);
+            DrawLine3D(a, b, Fade(RED, 0.9f));
+        }
+    }
+}
+
+static Vector3 ModelCollisionVertex(const LevlObject *object, const Model *model, const Mesh *mesh, int index)
+{
+    Vector3 local = { mesh->vertices[index * 3], mesh->vertices[index * 3 + 1], mesh->vertices[index * 3 + 2] };
+    Matrix transform = MatrixMultiply(MatrixScale(object->data.model.scale.x, object->data.model.scale.y, object->data.model.scale.z),
+                                      MatrixRotateXYZ(Vector3Scale(object->data.model.rotation, DEG2RAD)));
+    (void)model;
+    return Vector3Add(object->position, Vector3Transform(local, transform));
+}
+
+static void DrawModelCollision(const LevlObject *object, const Model *model)
+{
+    if (!model || !IsModelValid(*model)) return;
+    for (int meshIndex = 0; meshIndex < model->meshCount; ++meshIndex) {
+        const Mesh *mesh = &model->meshes[meshIndex];
+        for (int triangle = 0; triangle < mesh->triangleCount; ++triangle) {
+            int i0 = mesh->indices ? mesh->indices[triangle * 3] : triangle * 3;
+            int i1 = mesh->indices ? mesh->indices[triangle * 3 + 1] : triangle * 3 + 1;
+            int i2 = mesh->indices ? mesh->indices[triangle * 3 + 2] : triangle * 3 + 2;
+            Vector3 a = ModelCollisionVertex(object, model, mesh, i0);
+            Vector3 b = ModelCollisionVertex(object, model, mesh, i1);
+            Vector3 c = ModelCollisionVertex(object, model, mesh, i2);
+            DrawLine3D(a, b, Fade(RED, 0.9f));
+            DrawLine3D(b, c, Fade(RED, 0.9f));
+            DrawLine3D(c, a, Fade(RED, 0.9f));
+        }
+    }
+}
+
 static void DrawPlatform(const LevlObject *object)
 {
     const LevlPlatformData *data = &object->data.platform;
@@ -108,9 +151,13 @@ static void DrawRamp(const LevlObject *object)
     DrawLine3D(a, d, WHITE); DrawLine3D(b, c, WHITE);
 }
 
-static void DrawMarker(const LevlObject *object)
+static void DrawMarker(const LevlDocument *document, const LevlObject *object)
 {
-    Color markerColor = strcmp(object->tag, "player_spawn") == 0 ? LIME : YELLOW;
+    bool blocked = false;
+    Vector3 blockedSpawn;
+    if (strcmp(object->tag, "player_spawn") == 0 && LevlDocumentPlayerSpawnBlocked(document, &blockedSpawn, false))
+        blocked = Vector3Distance(blockedSpawn, object->position) < 0.001f;
+    Color markerColor = strcmp(object->tag, "player_spawn") == 0 ? (blocked ? RED : LIME) : YELLOW;
     DrawSphere(object->position, 0.26f, markerColor);
     DrawCylinder((Vector3){ object->position.x, object->position.y + 0.7f, object->position.z }, 0.035f, 0.035f, 1.1f, 6, markerColor);
     DrawSphere((Vector3){ object->position.x, object->position.y + 1.25f, object->position.z }, 0.11f, WHITE);
@@ -256,10 +303,15 @@ void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache
             case LEVL_OBJECT_PLATFORM: DrawPlatform(object); break;
             case LEVL_OBJECT_RAMP: DrawRamp(object); break;
             case LEVL_OBJECT_MODEL: DrawModelObject(modelCache, cacheCount, object); break;
-            case LEVL_OBJECT_MARKER: DrawMarker(object); break;
+            case LEVL_OBJECT_MARKER: DrawMarker(document, object); break;
         }
         BoundingBox bounds = LevlObjectGetBounds(object);
-        if (showColliders && (object->type == LEVL_OBJECT_BOX || object->type == LEVL_OBJECT_MESH || object->type == LEVL_OBJECT_MODEL)) DrawBoundingBox(bounds, Fade(RED, 0.4f));
+        if (showColliders && object->type == LEVL_OBJECT_MESH) DrawMeshCollision(object);
+        else if (showColliders && object->type == LEVL_OBJECT_MODEL) {
+            Model *model = EditorSceneGetModel(modelCache, cacheCount, object);
+            if (model) DrawModelCollision(object, model);
+            else DrawBoundingBox(bounds, Fade(RED, 0.4f));
+        } else if (showColliders && object->type == LEVL_OBJECT_BOX) DrawBoundingBox(bounds, Fade(RED, 0.4f));
         if (i == selectedIndex) DrawBoundingBox(bounds, YELLOW);
     }
 }
