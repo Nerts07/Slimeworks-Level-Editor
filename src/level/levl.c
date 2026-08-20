@@ -21,10 +21,38 @@ static void SetFaces(Color faceColors[6], Color color)
     for (int i = 0; i < 6; ++i) faceColors[i] = color;
 }
 
+static void SetMeshFace(LevlMeshFace *face, int count, int a, int b, int c, int d, Color color)
+{
+    *face = (LevlMeshFace){ .vertexCount = (unsigned char)count, .color = color };
+    face->vertices[0] = (unsigned short)a;
+    face->vertices[1] = (unsigned short)b;
+    face->vertices[2] = (unsigned short)c;
+    face->vertices[3] = (unsigned short)d;
+}
+
+static void MakeCubeMesh(LevlMeshData *mesh, Vector3 size, Vector3 rotation, const Color faceColors[6])
+{
+    float hx = size.x * 0.5f, hy = size.y * 0.5f, hz = size.z * 0.5f;
+    const Vector3 localVertices[8] = {
+        {-hx, -hy, -hz}, {hx, -hy, -hz}, {hx, hy, -hz}, {-hx, hy, -hz},
+        {-hx, -hy, hz}, {hx, -hy, hz}, {hx, hy, hz}, {-hx, hy, hz}
+    };
+    Matrix matrix = MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD));
+    *mesh = (LevlMeshData){ .vertexCount = 8, .faceCount = 6, .collidable = true };
+    for (int i = 0; i < 8; ++i) mesh->vertices[i] = Vector3Transform(localVertices[i], matrix);
+    SetMeshFace(&mesh->faces[0], 4, 3, 2, 6, 7, faceColors[0]);
+    SetMeshFace(&mesh->faces[1], 4, 4, 5, 1, 0, faceColors[1]);
+    SetMeshFace(&mesh->faces[2], 4, 0, 1, 2, 3, faceColors[2]);
+    SetMeshFace(&mesh->faces[3], 4, 5, 4, 7, 6, faceColors[3]);
+    SetMeshFace(&mesh->faces[4], 4, 1, 5, 6, 2, faceColors[4]);
+    SetMeshFace(&mesh->faces[5], 4, 4, 0, 3, 7, faceColors[5]);
+}
+
 const char *LevlObjectTypeName(LevlObjectType type)
 {
     switch (type) {
         case LEVL_OBJECT_BOX: return "Box";
+        case LEVL_OBJECT_MESH: return "Mesh";
         case LEVL_OBJECT_PLATFORM: return "Platform";
         case LEVL_OBJECT_RAMP: return "Ramp";
         case LEVL_OBJECT_MODEL: return "Model";
@@ -46,6 +74,10 @@ LevlObject *LevlDocumentAdd(LevlDocument *document, LevlObjectType type)
         object->data.box.subdivisions = 1;
         object->data.box.collidable = true;
         SetFaces(object->data.box.faceColors, (Color){ 91, 188, 151, 255 });
+    } else if (type == LEVL_OBJECT_MESH) {
+        Color colors[6];
+        SetFaces(colors, (Color){ 91, 188, 151, 255 });
+        MakeCubeMesh(&object->data.mesh, (Vector3){ 2.0f, 2.0f, 2.0f }, (Vector3){ 0 }, colors);
     } else if (type == LEVL_OBJECT_PLATFORM) {
         object->data.platform.size = (Vector2){ 16.0f, 16.0f };
         object->data.platform.top = 0.0f;
@@ -61,6 +93,56 @@ LevlObject *LevlDocumentAdd(LevlDocument *document, LevlObjectType type)
     }
     document->dirty = true;
     return object;
+}
+
+bool LevlObjectConvertBoxToMesh(LevlObject *object)
+{
+    if (!object || object->type != LEVL_OBJECT_BOX) return false;
+    LevlBoxData box = object->data.box;
+    LevlMeshData mesh;
+    MakeCubeMesh(&mesh, box.size, box.rotation, box.faceColors);
+    mesh.collidable = box.collidable;
+    object->type = LEVL_OBJECT_MESH;
+    object->data.mesh = mesh;
+    return true;
+}
+
+int LevlMeshBuildEdges(const LevlMeshData *mesh, LevlMeshEdge *edges, int maxEdges)
+{
+    if (!mesh || !edges || maxEdges <= 0) return 0;
+    int count = 0;
+    for (int faceIndex = 0; faceIndex < mesh->faceCount; ++faceIndex) {
+        const LevlMeshFace *face = &mesh->faces[faceIndex];
+        if (face->vertexCount < 2 || face->vertexCount > LEVL_MESH_FACE_MAX_VERTICES) continue;
+        for (int i = 0; i < face->vertexCount; ++i) {
+            unsigned short a = face->vertices[i];
+            unsigned short b = face->vertices[(i + 1) % face->vertexCount];
+            if (a > b) { unsigned short swap = a; a = b; b = swap; }
+            bool exists = false;
+            for (int edge = 0; edge < count; ++edge) if (edges[edge].a == a && edges[edge].b == b) { exists = true; break; }
+            if (!exists && count < maxEdges) edges[count++] = (LevlMeshEdge){ a, b };
+        }
+    }
+    return count;
+}
+
+BoundingBox LevlMeshGetBounds(const LevlObject *object)
+{
+    BoundingBox bounds = { 0 };
+    if (!object || object->type != LEVL_OBJECT_MESH || object->data.mesh.vertexCount <= 0) return bounds;
+    Vector3 first = Vector3Add(object->position, object->data.mesh.vertices[0]);
+    bounds.min = first;
+    bounds.max = first;
+    for (int i = 1; i < object->data.mesh.vertexCount; ++i) {
+        Vector3 vertex = Vector3Add(object->position, object->data.mesh.vertices[i]);
+        if (vertex.x < bounds.min.x) bounds.min.x = vertex.x;
+        if (vertex.y < bounds.min.y) bounds.min.y = vertex.y;
+        if (vertex.z < bounds.min.z) bounds.min.z = vertex.z;
+        if (vertex.x > bounds.max.x) bounds.max.x = vertex.x;
+        if (vertex.y > bounds.max.y) bounds.max.y = vertex.y;
+        if (vertex.z > bounds.max.z) bounds.max.z = vertex.z;
+    }
+    return bounds;
 }
 
 void LevlDocumentNew(LevlDocument *document)
@@ -144,6 +226,23 @@ static bool WriteDocument(const LevlDocument *document, const char *filePath, ch
                     fprintf(file, " %d %d %d %d", color.r, color.g, color.b, color.a);
                 }
                 fprintf(file, "\n");
+            } break;
+            case LEVL_OBJECT_MESH: {
+                const LevlMeshData *data = &object->data.mesh;
+                fprintf(file, "MESH %s %s %.3f %.3f %.3f %d %d %d\n", object->name, object->tag,
+                        object->position.x, object->position.y, object->position.z, data->collidable ? 1 : 0,
+                        data->vertexCount, data->faceCount);
+                for (int vertex = 0; vertex < data->vertexCount; ++vertex) {
+                    Vector3 value = data->vertices[vertex];
+                    fprintf(file, "VERTEX %.3f %.3f %.3f\n", value.x, value.y, value.z);
+                }
+                for (int face = 0; face < data->faceCount; ++face) {
+                    const LevlMeshFace *value = &data->faces[face];
+                    fprintf(file, "FACE %d %d %d %d %d %d %d %d %d\n", value->vertexCount,
+                            value->vertices[0], value->vertices[1], value->vertices[2], value->vertices[3],
+                            value->color.r, value->color.g, value->color.b, value->color.a);
+                }
+                fprintf(file, "END_MESH\n");
             } break;
             case LEVL_OBJECT_MODEL: {
                 const LevlModelData *data = &object->data.model;
@@ -253,6 +352,34 @@ bool LevlDocumentLoad(LevlDocument *document, const char *filePath, char *messag
             if (data->subdivisions > 16) data->subdivisions = 16;
             lastBox = object;
             continue;
+        } else if (strncmp(line, "MESH ", 5) == 0) {
+            object = LevlDocumentAdd(&parsed, LEVL_OBJECT_MESH);
+            LevlMeshData *data = &object->data.mesh;
+            int collidable, vertexCount, faceCount;
+            if (sscanf(line, "MESH %31s %31s %f %f %f %d %d %d", object->name, object->tag,
+                       &object->position.x, &object->position.y, &object->position.z, &collidable, &vertexCount, &faceCount) != 8 ||
+                vertexCount < 3 || vertexCount > LEVL_MESH_MAX_VERTICES || faceCount < 1 || faceCount > LEVL_MESH_MAX_FACES) goto parse_error;
+            *data = (LevlMeshData){ .vertexCount = vertexCount, .faceCount = faceCount, .collidable = collidable != 0 };
+            for (int vertex = 0; vertex < vertexCount; ++vertex) {
+                if (!fgets(line, sizeof(line), file)) goto parse_error;
+                StripLine(line);
+                if (sscanf(line, "VERTEX %f %f %f", &data->vertices[vertex].x, &data->vertices[vertex].y, &data->vertices[vertex].z) != 3) goto parse_error;
+            }
+            for (int face = 0; face < faceCount; ++face) {
+                int count, a, b, c, d, r, g, blue, alpha;
+                if (!fgets(line, sizeof(line), file)) goto parse_error;
+                StripLine(line);
+                if (sscanf(line, "FACE %d %d %d %d %d %d %d %d %d", &count, &a, &b, &c, &d, &r, &g, &blue, &alpha) != 9 ||
+                    count < 3 || count > LEVL_MESH_FACE_MAX_VERTICES || a < 0 || b < 0 || c < 0 || d < 0 ||
+                    a >= vertexCount || b >= vertexCount || c >= vertexCount || d >= vertexCount ||
+                    r < 0 || r > 255 || g < 0 || g > 255 || blue < 0 || blue > 255 || alpha < 0 || alpha > 255) goto parse_error;
+                SetMeshFace(&data->faces[face], count, a, b, c, d, (Color){ (unsigned char)r, (unsigned char)g, (unsigned char)blue, (unsigned char)alpha });
+            }
+            if (!fgets(line, sizeof(line), file)) goto parse_error;
+            StripLine(line);
+            if (strcmp(line, "END_MESH") != 0) goto parse_error;
+            lastBox = NULL;
+            continue;
         } else if (strncmp(line, "FACES ", 6) == 0) {
             if (!lastBox || !ReadFaces(line, lastBox->data.box.faceColors)) goto parse_error;
             continue;
@@ -358,6 +485,8 @@ BoundingBox LevlObjectGetBounds(const LevlObject *object)
     if (object->type == LEVL_OBJECT_BOX) {
         Vector3 half = Vector3Scale(object->data.box.size, 0.5f);
         min = Vector3Subtract(object->position, half); max = Vector3Add(object->position, half);
+    } else if (object->type == LEVL_OBJECT_MESH) {
+        return LevlMeshGetBounds(object);
     } else if (object->type == LEVL_OBJECT_PLATFORM) {
         Vector2 half = Vector2Scale(object->data.platform.size, 0.5f);
         min = (Vector3){ object->position.x - half.x, object->data.platform.top - 2.0f, object->position.z - half.y };

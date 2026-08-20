@@ -8,9 +8,13 @@
 #define LEVL_NAME_LENGTH 32
 #define LEVL_TAG_LENGTH 32
 #define LEVL_PATH_LENGTH 256
+#define LEVL_MESH_MAX_VERTICES 128
+#define LEVL_MESH_MAX_FACES 128
+#define LEVL_MESH_FACE_MAX_VERTICES 4
 
 typedef enum LevlObjectType {
     LEVL_OBJECT_BOX,
+    LEVL_OBJECT_MESH,
     LEVL_OBJECT_PLATFORM,
     LEVL_OBJECT_RAMP,
     LEVL_OBJECT_MODEL,
@@ -25,6 +29,25 @@ typedef struct LevlBoxData {
     int subdivisions;
     bool collidable;
 } LevlBoxData;
+
+typedef struct LevlMeshFace {
+    unsigned char vertexCount;
+    unsigned short vertices[LEVL_MESH_FACE_MAX_VERTICES];
+    Color color;
+} LevlMeshFace;
+
+typedef struct LevlMeshData {
+    Vector3 vertices[LEVL_MESH_MAX_VERTICES];
+    int vertexCount;
+    LevlMeshFace faces[LEVL_MESH_MAX_FACES];
+    int faceCount;
+    bool collidable;
+} LevlMeshData;
+
+typedef struct LevlMeshEdge {
+    unsigned short a;
+    unsigned short b;
+} LevlMeshEdge;
 
 typedef struct LevlPlatformData {
     Vector2 size;
@@ -54,6 +77,7 @@ typedef struct LevlObject {
     Vector3 position;
     union {
         LevlBoxData box;
+        LevlMeshData mesh;
         LevlPlatformData platform;
         LevlRampData ramp;
         LevlModelData model;
@@ -77,5 +101,8 @@ bool LevlDocumentLoad(LevlDocument *document, const char *filePath, char *messag
 bool LevlDocumentExportToGame(const LevlDocument *document, const char *gameLevelPath, char *message, int messageSize);
 BoundingBox LevlObjectGetBounds(const LevlObject *object);
 const char *LevlObjectTypeName(LevlObjectType type);
+bool LevlObjectConvertBoxToMesh(LevlObject *object);
+int LevlMeshBuildEdges(const LevlMeshData *mesh, LevlMeshEdge *edges, int maxEdges);
+BoundingBox LevlMeshGetBounds(const LevlObject *object);
 
 #endif

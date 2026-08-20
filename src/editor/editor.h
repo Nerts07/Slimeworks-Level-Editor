@@ -4,6 +4,12 @@
 #include "../level/levl.h"
 #include "../navigation/editor_navigation.h"
 #include "../render/scene_draw.h"
+#include "../mesh/mesh_edit.h"
+
+typedef enum EditorMode {
+    EDITOR_MODE_OBJECT,
+    EDITOR_MODE_EDIT
+} EditorMode;
 
 typedef enum EditorTextMode {
     EDITOR_TEXT_NONE,
@@ -33,6 +39,8 @@ typedef struct Editor {
     EditorNavigation navigation;
     int selectedIndex;
     int selectedFace;
+    EditorMode mode;
+    EditorMeshEdit meshEdit;
     EditorGizmoMode gizmoMode;
     int gizmoHighlightedAxis;
     EditorGizmoDrag gizmoDrag;

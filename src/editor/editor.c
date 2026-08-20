@@ -71,6 +71,35 @@ static void SelectNext(Editor *editor)
     SetStatus(editor, "Selected next object");
 }
 
+static const char *EditorModeName(EditorMode mode)
+{
+    return mode == EDITOR_MODE_EDIT ? "Edit Mode" : "Object Mode";
+}
+
+static void ToggleEditMode(Editor *editor)
+{
+    LevlObject *object = SelectedObject(editor);
+    if (editor->mode == EDITOR_MODE_EDIT) {
+        editor->mode = EDITOR_MODE_OBJECT;
+        EditorMeshEditReset(&editor->meshEdit);
+        SetStatus(editor, "Object Mode");
+        return;
+    }
+    if (!object) { SetStatus(editor, "Select a box or mesh first"); return; }
+    if (object->type == LEVL_OBJECT_BOX) {
+        LevlObjectConvertBoxToMesh(object);
+        editor->document.dirty = true;
+        SetStatus(editor, "Box converted to an editable mesh; box-only bevel and edge-loop settings are reset");
+    }
+    if (object->type != LEVL_OBJECT_MESH) {
+        SetStatus(editor, "Edit Mode currently supports box meshes only");
+        return;
+    }
+    editor->mode = EDITOR_MODE_EDIT;
+    EditorMeshEditBegin(&editor->meshEdit, object);
+    SetStatus(editor, "Edit Mode — 1 vertex, 2 edge, 3 face; LMB select, Shift+RMB add/remove");
+}
+
 static Vector3 DefaultCreatePosition(const Editor *editor)
 {
     Vector3 direction = Vector3Normalize(Vector3Subtract(editor->camera.target, editor->camera.position));
@@ -226,8 +255,9 @@ static void ToggleCollision(Editor *editor)
     LevlObject *object = SelectedObject(editor);
     if (!object) return;
     if (object->type == LEVL_OBJECT_BOX) object->data.box.collidable = !object->data.box.collidable;
+    else if (object->type == LEVL_OBJECT_MESH) object->data.mesh.collidable = !object->data.mesh.collidable;
     else if (object->type == LEVL_OBJECT_MODEL) object->data.model.collidable = !object->data.model.collidable;
-    else { SetStatus(editor, "Only boxes and models generate solid colliders"); return; }
+    else { SetStatus(editor, "Only boxes, meshes and models generate solid colliders"); return; }
     editor->document.dirty = true;
     SetStatus(editor, "Collider toggled");
 }
@@ -416,14 +446,68 @@ static void SetGizmoMode(Editor *editor, EditorGizmoMode mode)
                       (mode == EDITOR_GIZMO_ROTATE ? "Rotate gizmo — drag a coloured ring" : "Scale gizmo — drag a coloured axis"));
 }
 
+static void UpdateMeshEditControls(Editor *editor)
+{
+    LevlObject *object = SelectedObject(editor);
+    if (!object || object->type != LEVL_OBJECT_MESH || editor->meshEdit.objectId != object->id) {
+        editor->mode = EDITOR_MODE_OBJECT;
+        EditorMeshEditReset(&editor->meshEdit);
+        SetStatus(editor, "Edit Mode closed because the active mesh changed");
+        return;
+    }
+    if (IsKeyPressed(KEY_TAB)) { ToggleEditMode(editor); return; }
+    if (IsKeyPressed(KEY_ONE)) { EditorMeshEditSetSelectMode(&editor->meshEdit, EDITOR_MESH_SELECT_VERTEX); SetStatus(editor, "Vertex select mode"); }
+    if (IsKeyPressed(KEY_TWO)) { EditorMeshEditSetSelectMode(&editor->meshEdit, EDITOR_MESH_SELECT_EDGE); SetStatus(editor, "Edge select mode"); }
+    if (IsKeyPressed(KEY_THREE)) { EditorMeshEditSetSelectMode(&editor->meshEdit, EDITOR_MESH_SELECT_FACE); SetStatus(editor, "Face select mode"); }
+    if ((IsKeyDown(KEY_LEFT_ALT) || IsKeyDown(KEY_RIGHT_ALT)) && IsKeyPressed(KEY_A)) { EditorMeshEditClear(&editor->meshEdit); SetStatus(editor, "Mesh selection cleared"); }
+    else if (IsKeyPressed(KEY_A) && !ShiftHeld()) { EditorMeshEditSelectAll(&editor->meshEdit, object); SetStatus(editor, "Selected all mesh elements"); }
+
+    if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+        if (EditorMeshEditPick(&editor->meshEdit, object, editor->camera, GetMousePosition(), false)) SetStatus(editor, "Mesh element selected");
+    }
+    if (IsMouseButtonPressed(MOUSE_BUTTON_RIGHT) && ShiftHeld()) {
+        if (EditorMeshEditPick(&editor->meshEdit, object, editor->camera, GetMousePosition(), true)) SetStatus(editor, "Mesh selection updated");
+    }
+
+    float step = editor->snapEnabled ? editor->gridStep : (ShiftHeld() ? 1.0f : 0.2f);
+    Vector3 movement = { 0 };
+    if (IsKeyDown(KEY_LEFT)) movement.x -= step;
+    if (IsKeyDown(KEY_RIGHT)) movement.x += step;
+    if (IsKeyDown(KEY_UP)) movement.z -= step;
+    if (IsKeyDown(KEY_DOWN)) movement.z += step;
+    if (IsKeyDown(KEY_Q)) movement.y += step;
+    if (IsKeyDown(KEY_E)) movement.y -= step;
+    if (Vector3Length(movement) > 0.0f) {
+        EditorMeshEditMove(&editor->meshEdit, object, movement);
+        editor->document.dirty = true;
+    }
+    if (IsKeyPressed(KEY_LEFT_BRACKET)) { EditorMeshEditScale(&editor->meshEdit, object, 0.9f); editor->document.dirty = true; }
+    if (IsKeyPressed(KEY_RIGHT_BRACKET)) { EditorMeshEditScale(&editor->meshEdit, object, 1.1f); editor->document.dirty = true; }
+    if (IsKeyPressed(KEY_COMMA)) { EditorMeshEditRotateY(&editor->meshEdit, object, editor->snapEnabled ? -15.0f : -5.0f); editor->document.dirty = true; }
+    if (IsKeyPressed(KEY_PERIOD)) { EditorMeshEditRotateY(&editor->meshEdit, object, editor->snapEnabled ? 15.0f : 5.0f); editor->document.dirty = true; }
+    if (IsKeyPressed(KEY_C) && editor->meshEdit.selectMode == EDITOR_MESH_SELECT_FACE) {
+        EditorMeshEditCycleFaceColor(&editor->meshEdit, object, EDITOR_PALETTE, (int)(sizeof(EDITOR_PALETTE) / sizeof(EDITOR_PALETTE[0])));
+        editor->document.dirty = true;
+    }
+    if (IsKeyPressed(KEY_G)) SetStatus(editor, "Move selection: arrows/Q/E (Shift for large step)");
+    if (IsKeyPressed(KEY_R)) SetStatus(editor, "Rotate selection: , and .");
+    if (IsKeyPressed(KEY_S)) SetStatus(editor, "Scale selection: [ and ]");
+}
+
 static void UpdateEditorControls(Editor *editor, float deltaTime)
 {
+    /* In Edit Mode Shift+RMB is reserved for multi-selection, not trackpad pan. */
+    if (editor->mode == EDITOR_MODE_EDIT && ShiftHeld() && IsMouseButtonDown(MOUSE_BUTTON_RIGHT)) {
+        UpdateMeshEditControls(editor);
+        return;
+    }
     if (EditorNavigationUpdate(&editor->navigation, &editor->camera, deltaTime)) return;
     if (EditorNavigationHandleViewShortcuts(&editor->navigation, &editor->camera)) {
         SetStatus(editor, "Orthographic view snapped; orbit to return to perspective");
         return;
     }
 
+    if (editor->mode == EDITOR_MODE_EDIT) { UpdateMeshEditControls(editor); return; }
     if (editor->gizmoDrag.active) { UpdateGizmoDrag(editor); return; }
     LevlObject *object = SelectedObject(editor);
     editor->gizmoHighlightedAxis = object ? PickGizmoAxis(editor, object, GetMousePosition()) : -1;
@@ -431,9 +515,10 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
         if (editor->gizmoHighlightedAxis >= 0) BeginGizmoDrag(editor, editor->gizmoHighlightedAxis);
         else SelectAtMouse(editor);
     }
-    if (IsKeyPressed(KEY_TAB)) SelectNext(editor);
+    if (IsKeyPressed(KEY_TAB) && !CommandOrControlHeld()) { ToggleEditMode(editor); return; }
 
     if (CommandOrControlHeld()) {
+        if (IsKeyPressed(KEY_TAB)) { SelectNext(editor); return; }
         if (IsKeyPressed(KEY_S)) {
             char result[192]; LevlDocumentSave(&editor->document, "level.levl", result, (int)sizeof(result)); SetStatus(editor, result);
         }
@@ -443,6 +528,8 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
                 EditorSceneUnloadModels(editor->modelCache, LEVL_MAX_OBJECTS);
                 memset(editor->modelCache, 0, sizeof(editor->modelCache));
                 editor->selectedIndex = editor->document.objectCount ? 0 : -1;
+                editor->mode = EDITOR_MODE_OBJECT;
+                EditorMeshEditReset(&editor->meshEdit);
             }
             SetStatus(editor, result);
         }
@@ -465,6 +552,8 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
         memset(editor->modelCache, 0, sizeof(editor->modelCache));
         LevlDocumentNew(&editor->document);
         editor->selectedIndex = 0;
+        editor->mode = EDITOR_MODE_OBJECT;
+        EditorMeshEditReset(&editor->meshEdit);
         SetStatus(editor, "New starter level created");
     }
     if (IsKeyPressed(KEY_F6)) {
@@ -476,6 +565,7 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
     if (IsKeyPressed(KEY_R) && !ShiftHeld()) SetGizmoMode(editor, EDITOR_GIZMO_ROTATE);
     if (IsKeyPressed(KEY_S) && !ShiftHeld()) SetGizmoMode(editor, EDITOR_GIZMO_SCALE);
     if (IsKeyPressed(KEY_A) && !ShiftHeld()) AddObject(editor, LEVL_OBJECT_BOX);
+    if (ShiftHeld() && IsKeyPressed(KEY_A)) AddObject(editor, LEVL_OBJECT_MESH);
     if (IsKeyPressed(KEY_P)) AddObject(editor, LEVL_OBJECT_PLATFORM);
     if (ShiftHeld() && IsKeyPressed(KEY_R)) AddObject(editor, LEVL_OBJECT_RAMP);
     if (IsKeyPressed(KEY_K)) AddObject(editor, LEVL_OBJECT_MARKER);
@@ -533,6 +623,7 @@ static void DrawInspector(const Editor *editor)
     DrawTextLine(editor->document.dirty ? "Unsaved changes" : "Saved", x, &y, 14, editor->document.dirty ? ORANGE : LIGHTGRAY);
     DrawTextLine(TextFormat("Grid %.3g | snap %s", editor->gridStep, editor->snapEnabled ? "on" : "off"), x, &y, 14, editor->snapEnabled ? LIME : LIGHTGRAY);
     DrawTextLine(TextFormat("Camera: %s", EditorNavigationModeName(&editor->navigation)), x, &y, 14, LIGHTGRAY);
+    DrawTextLine(TextFormat("Mode: %s", EditorModeName(editor->mode)), x, &y, 14, editor->mode == EDITOR_MODE_EDIT ? YELLOW : LIGHTGRAY);
     y += 8;
     const LevlObject *object = editor->selectedIndex >= 0 && editor->selectedIndex < editor->document.objectCount ? &editor->document.objects[editor->selectedIndex] : NULL;
     if (object) {
@@ -551,6 +642,16 @@ static void DrawInspector(const Editor *editor)
                 swatchX += 42;
             }
             y += 32;
+        } else if (object->type == LEVL_OBJECT_MESH) {
+            LevlMeshEdge edges[EDITOR_MESH_MAX_EDGES];
+            int edgeCount = LevlMeshBuildEdges(&object->data.mesh, edges, EDITOR_MESH_MAX_EDGES);
+            DrawTextLine(TextFormat("Mesh: %d vertices | %d edges | %d faces", object->data.mesh.vertexCount, edgeCount, object->data.mesh.faceCount), x, &y, 15, LIGHTGRAY);
+            if (editor->mode == EDITOR_MODE_EDIT) {
+                DrawTextLine(TextFormat("Select: %s | %d selected", EditorMeshSelectModeName(editor->meshEdit.selectMode),
+                                        EditorMeshEditSelectionCount(&editor->meshEdit, object)), x, &y, 15, YELLOW);
+            }
+            DrawTextLine(object->data.mesh.collidable ? "Collision: generated from mesh bounds" : "Collision: disabled", x, &y, 15,
+                         object->data.mesh.collidable ? LIME : ORANGE);
         } else if (object->type == LEVL_OBJECT_MODEL) {
             DrawTextLine(TextFormat("Asset: %s", object->data.model.assetPath), x, &y, 14, LIGHTGRAY);
             DrawTextLine(object->data.model.collidable ? "Collision: generated from bounds" : "Collision: disabled", x, &y, 15, object->data.model.collidable ? LIME : ORANGE);
@@ -565,10 +666,12 @@ static void DrawInspector(const Editor *editor)
     DrawTextLine("I import OBJ/GLB/GLTF/IQM/VOX/FBX", x, &y, 14, LIGHTGRAY);
     DrawTextLine("EDIT", x, &y, 16, (Color){ 124, 255, 187, 255 });
     DrawTextLine("G/R/S gizmo | drag coloured axis/ring", x, &y, 14, LIGHTGRAY);
-    DrawTextLine("Click/Tab select | arrows move | Q/E vertical", x, &y, 14, LIGHTGRAY);
+    DrawTextLine("Click select | Tab Edit Mode | Ctrl+Tab next object", x, &y, 14, LIGHTGRAY);
     DrawTextLine("[ ] resize | , . rotate | Ctrl+A apply scale", x, &y, 14, LIGHTGRAY);
     DrawTextLine("F2 rename | T tag | Shift+S snap | Shift+,/. grid", x, &y, 14, LIGHTGRAY);
     DrawTextLine("Box: F face, C colour, B/N bevel, +/- edge loops", x, &y, 14, LIGHTGRAY);
+    DrawTextLine("Edit: 1 vertex, 2 edge, 3 face | Shift+RMB multi-select", x, &y, 14, LIGHTGRAY);
+    DrawTextLine("Edit move: arrows/Q/E | [ ] scale | , . rotate | C colour", x, &y, 14, LIGHTGRAY);
     DrawTextLine("O collider | H show colliders | Del delete", x, &y, 14, LIGHTGRAY);
     DrawTextLine("SAVE / EXPORT", x, &y, 16, (Color){ 124, 255, 187, 255 });
     DrawTextLine("Ctrl+S save | Ctrl+O load | F6 export to game", x, &y, 14, LIGHTGRAY);
@@ -596,7 +699,7 @@ static void DrawOverlay(const Editor *editor)
 
 void EditorInit(Editor *editor)
 {
-    *editor = (Editor){ .selectedIndex = 0, .showColliders = true,
+    *editor = (Editor){ .selectedIndex = 0, .mode = EDITOR_MODE_OBJECT, .showColliders = true,
                         .gizmoMode = EDITOR_GIZMO_MOVE, .gizmoHighlightedAxis = -1, .snapEnabled = true, .gridStep = 1.0f };
     InitWindow(1280, 720, "Slimeworks Level Editor");
     SetTargetFPS(60);
@@ -605,6 +708,7 @@ void EditorInit(Editor *editor)
         .up = { 0.0f, 1.0f, 0.0f }, .fovy = 50.0f, .projection = CAMERA_PERSPECTIVE
     };
     EditorNavigationInit(&editor->navigation, &editor->camera);
+    EditorMeshEditReset(&editor->meshEdit);
     LevlDocumentNew(&editor->document);
     SetStatus(editor, "Starter level ready — F6 exports it to the game");
 }
@@ -623,7 +727,8 @@ void EditorRun(Editor *editor)
         EditorSceneDraw(&editor->document, editor->selectedIndex, editor->modelCache, LEVL_MAX_OBJECTS,
                         editor->showColliders, &editor->camera, EditorNavigationIsOrthographic(&editor->navigation), editor->gridStep);
         LevlObject *selected = SelectedObject(editor);
-        if (selected) EditorSceneDrawGizmo(selected, editor->gizmoMode, editor->gizmoHighlightedAxis);
+        if (editor->mode == EDITOR_MODE_EDIT && selected) EditorMeshEditDraw(&editor->meshEdit, selected);
+        else if (selected) EditorSceneDrawGizmo(selected, editor->gizmoMode, editor->gizmoHighlightedAxis);
         EndMode3D();
         DrawOverlay(editor);
         EndDrawing();

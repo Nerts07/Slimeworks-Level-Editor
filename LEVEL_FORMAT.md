@@ -24,10 +24,25 @@ END
 | `RAMP` | `name tag startX startY startZ endX endY endZ width r g b a` |
 | `BOX` | `name tag posX posY posZ sizeX sizeY sizeZ rotX rotY rotZ bevel subdivisions collidable` |
 | `FACES` | 6 групп `r g b a`, строго после своего `BOX`: top, bottom, front, back, right, left |
+| `MESH` | `name tag posX posY posZ collidable vertexCount faceCount`, затем блок вершин и граней до `END_MESH` |
+| `VERTEX` | `x y z`, одна строка на вершину сразу после `MESH` |
+| `FACE` | `vertexCount index0 index1 index2 index3 r g b a`; сейчас поддерживаются треугольники и quad-грани |
 | `MODEL` | `name tag assetPath posX posY posZ rotX rotY rotZ scaleX scaleY scaleZ collidable colliderX colliderY colliderZ` |
 | `MARKER` | `name tag x y z` |
 
-`collidable` равен `1` для физического препятствия и `0` для декора. Для боксов и моделей игра автоматически использует AABB-коллайдер. Площадки и склоны автоматически участвуют в определении земли и наклона.
+`collidable` равен `1` для физического препятствия и `0` для декора. Для боксов, Mesh и моделей игра автоматически использует AABB-коллайдер. Площадки и склоны автоматически участвуют в определении земли и наклона.
+
+Пример минимального mesh-блока:
+
+```text
+MESH roof prop 0 3 0 1 4 1
+VERTEX -2 0 -2
+VERTEX 2 0 -2
+VERTEX 2 0 2
+VERTEX -2 0 2
+FACE 4 0 1 2 3 90 160 230 255
+END_MESH
+```
 
 ## Правила экспорта
 
@@ -42,4 +57,3 @@ Slimeworks Factory/
 ```
 
 Игра ищет `levels/factory.levl` при старте. Если файла нет или он невалиден, запускается встроенный демонстрационный уровень — проект остаётся рабочим даже после чистого клона.
-

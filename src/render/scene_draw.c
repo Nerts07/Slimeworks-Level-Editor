@@ -61,6 +61,21 @@ static void DrawBox(const LevlObject *object)
     }
 }
 
+static void DrawEditableMesh(const LevlObject *object)
+{
+    const LevlMeshData *mesh = &object->data.mesh;
+    for (int faceIndex = 0; faceIndex < mesh->faceCount; ++faceIndex) {
+        const LevlMeshFace *face = &mesh->faces[faceIndex];
+        if (face->vertexCount < 3 || face->vertexCount > LEVL_MESH_FACE_MAX_VERTICES) continue;
+        Vector3 a = Vector3Add(object->position, mesh->vertices[face->vertices[0]]);
+        for (int vertex = 1; vertex + 1 < face->vertexCount; ++vertex) {
+            Vector3 b = Vector3Add(object->position, mesh->vertices[face->vertices[vertex]]);
+            Vector3 c = Vector3Add(object->position, mesh->vertices[face->vertices[vertex + 1]]);
+            DrawTriangle3D(a, b, c, face->color);
+        }
+    }
+}
+
 static void DrawPlatform(const LevlObject *object)
 {
     const LevlPlatformData *data = &object->data.platform;
@@ -234,13 +249,14 @@ void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache
         LevlObject *object = &document->objects[i];
         switch (object->type) {
             case LEVL_OBJECT_BOX: DrawBox(object); break;
+            case LEVL_OBJECT_MESH: DrawEditableMesh(object); break;
             case LEVL_OBJECT_PLATFORM: DrawPlatform(object); break;
             case LEVL_OBJECT_RAMP: DrawRamp(object); break;
             case LEVL_OBJECT_MODEL: DrawModelObject(modelCache, cacheCount, object); break;
             case LEVL_OBJECT_MARKER: DrawMarker(object); break;
         }
         BoundingBox bounds = LevlObjectGetBounds(object);
-        if (showColliders && (object->type == LEVL_OBJECT_BOX || object->type == LEVL_OBJECT_MODEL)) DrawBoundingBox(bounds, Fade(RED, 0.4f));
+        if (showColliders && (object->type == LEVL_OBJECT_BOX || object->type == LEVL_OBJECT_MESH || object->type == LEVL_OBJECT_MODEL)) DrawBoundingBox(bounds, Fade(RED, 0.4f));
         if (i == selectedIndex) DrawBoundingBox(bounds, YELLOW);
     }
 }
