@@ -54,6 +54,8 @@ typedef struct Editor {
     bool playerSpawnBlocked;
     unsigned int spawnModelValidationHash;
     bool spawnModelBlocked;
+    bool parentingMode;
+    int parentingChildIndex;
     EditorTextMode textMode;
     char textBuffer[512];
     char status[192];

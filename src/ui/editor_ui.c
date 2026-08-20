@@ -94,6 +94,8 @@ static void DrawTopBar(const EditorUIState *state)
         Button(568, 10, 82, 36, state->snapEnabled ? "SNAP ON" : "SNAP OFF", EDITOR_UI_TOGGLE_SNAP, state->snapEnabled, true),
         Button(658, 10, 94, 36, state->showColliders ? "COLLIDERS" : "WIREFRAME", EDITOR_UI_TOGGLE_COLLIDERS, state->showColliders, true),
         Button(758, 10, 86, 36, state->cameraMode, EDITOR_UI_TOGGLE_CAMERA, false, true),
+        Button(850, 10, 68, 36, "COPY", EDITOR_UI_COPY, false, state->selectedObject != NULL),
+        Button(922, 10, 68, 36, "PASTE", EDITOR_UI_PASTE, false, true),
         Button(GetScreenWidth() - 246, 10, 70, 36, "NEW", EDITOR_UI_NEW, false, true),
         Button(GetScreenWidth() - 170, 10, 70, 36, "SAVE", EDITOR_UI_SAVE, false, true),
         Button(GetScreenWidth() - 94, 10, 78, 36, "EXPORT", EDITOR_UI_EXPORT, false, true)
@@ -115,6 +117,7 @@ static void DrawLeftToolbar(const EditorUIState *state)
     buttons[count++] = Button(12, 206, 80, 32, "RAMP", EDITOR_UI_ADD_RAMP, false, state->mode == EDITOR_MODE_OBJECT);
     buttons[count++] = Button(12, 244, 80, 32, "MARKER", EDITOR_UI_ADD_MARKER, false, state->mode == EDITOR_MODE_OBJECT);
     buttons[count++] = Button(12, 282, 80, 32, "IMPORT", EDITOR_UI_IMPORT_MODEL, false, state->mode == EDITOR_MODE_OBJECT);
+    buttons[count++] = Button(12, 320, 80, 32, "EMPTY", EDITOR_UI_ADD_EMPTY, false, state->mode == EDITOR_MODE_OBJECT);
     if (state->mode == EDITOR_MODE_EDIT) {
         Label("SELECT", 17, 340, 11, UI_MUTED);
         buttons[count++] = Button(12, 358, 80, 32, "VERTEX", EDITOR_UI_SELECT_VERTEX, state->meshSelectMode == EDITOR_MESH_SELECT_VERTEX, true);
@@ -142,12 +145,13 @@ static void DrawInspectorPanel(const EditorUIState *state)
     const LevlObject *object = state->selectedObject;
     Label(object->name, (int)panel.x + 18, 106, 20, UI_TEXT);
     Label(TextFormat("%s  ·  #%d", LevlObjectTypeName(object->type), object->id), (int)panel.x + 18, 132, 13, UI_ACCENT);
+    Label(object->parentId > 0 ? TextFormat("Parent object  #%d", object->parentId) : "Parent object  —", (int)panel.x + 190, 132, 12, UI_MUTED);
     DrawLine((int)panel.x + 18, 156, (int)panel.x + panel.width - 18, 156, UI_BORDER);
     Label("TRANSFORM", (int)panel.x + 18, 174, 11, UI_MUTED);
     Label(TextFormat("Position  %.2f   %.2f   %.2f", object->position.x, object->position.y, object->position.z), (int)panel.x + 18, 195, 13, UI_TEXT);
     Label(TextFormat("Mode  %s   ·   Grid %.3g", state->cameraMode, state->gridStep), (int)panel.x + 18, 216, 13, UI_MUTED);
 
-    UIButton buttons[10];
+    UIButton buttons[14];
     int count = 0;
     int y = 246;
     if (object->type == LEVL_OBJECT_MESH) {
@@ -181,6 +185,34 @@ static void DrawInspectorPanel(const EditorUIState *state)
     buttons[count++] = Button(panel.x + 226, y, 98, 30, "DELETE", EDITOR_UI_DELETE, false, true);
     for (int i = 0; i < count; ++i) DrawButton(buttons[i]);
     y += 56;
+    DrawButton(Button(panel.x + 18, y, 146, 30, object->parentId > 0 ? "CLEAR PARENT" : "SET PARENT",
+                      object->parentId > 0 ? EDITOR_UI_CLEAR_PARENT : EDITOR_UI_SET_PARENT, false, true));
+    if (state->parentingMode) Label("Choose an Empty in hierarchy", (int)panel.x + 178, y + 9, 12, UI_WARNING);
+    y += 44;
+    Label("HIERARCHY", (int)panel.x + 18, y, 11, UI_MUTED);
+    if (state->document) {
+        int rowY = y + 22;
+        for (int index = 0; index < state->document->objectCount && rowY < GetScreenHeight() - 48; ++index) {
+            const LevlObject *entry = &state->document->objects[index];
+            int depth = 0;
+            int parentId = entry->parentId;
+            while (parentId > 0 && depth < 8) {
+                bool found = false;
+                for (int candidate = 0; candidate < state->document->objectCount; ++candidate) {
+                    if (state->document->objects[candidate].id == parentId) {
+                        parentId = state->document->objects[candidate].parentId;
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) break;
+                depth++;
+            }
+            Color rowColor = entry == object ? UI_ACCENT : (entry->type == LEVL_OBJECT_EMPTY ? UI_WARNING : UI_TEXT);
+            Label(TextFormat("%s%s", depth > 0 ? "  └ " : "• ", entry->name), (int)panel.x + 18 + depth * 12, rowY, 12, rowColor);
+            rowY += 20;
+        }
+    }
     if (state->playerSpawnBlocked) {
         DrawRectangleRounded((Rectangle){ panel.x + 18, y, panel.width - 36, 58 }, 0.12f, 4, (Color){ 87, 34, 43, 255 });
         Label("PLAYER SPAWN BLOCKED", (int)panel.x + 30, y + 11, 13, UI_DANGER);
@@ -209,12 +241,12 @@ void EditorUIDraw(const EditorUIState *state)
     DrawBottomBar(state);
 }
 
-EditorUIAction EditorUIHandleMouse(const EditorUIState *state, Vector2 mouse)
+EditorUIAction EditorUIHandleMouse(const EditorUIState *state, Vector2 mouse, int *targetIndex)
 {
     if (!state || !IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) return EDITOR_UI_NONE;
     Rectangle panel = RightPanel();
     if (mouse.x >= panel.x) {
-        UIButton buttons[10];
+        UIButton buttons[14];
         int count = 0;
         const LevlObject *object = state->selectedObject;
         int y = 246;
@@ -242,7 +274,23 @@ EditorUIAction EditorUIHandleMouse(const EditorUIState *state, Vector2 mouse)
         buttons[count++] = Button(panel.x + 18, y, 96, 30, "", EDITOR_UI_RENAME, false, object != NULL);
         buttons[count++] = Button(panel.x + 122, y, 96, 30, "", EDITOR_UI_SET_TAG, false, object != NULL);
         buttons[count++] = Button(panel.x + 226, y, 98, 30, "", EDITOR_UI_DELETE, false, object != NULL);
-        return HitButtons(buttons, count, mouse);
+        EditorUIAction action = HitButtons(buttons, count, mouse);
+        if (action != EDITOR_UI_NONE) return action;
+        y += 56;
+        UIButton parentButton = Button(panel.x + 18, y, 146, 30, "", object && object->parentId > 0 ? EDITOR_UI_CLEAR_PARENT : EDITOR_UI_SET_PARENT, false, object != NULL);
+        action = HitButtons(&parentButton, 1, mouse);
+        if (action != EDITOR_UI_NONE) return action;
+        if (state->document && mouse.y >= y + 44) {
+            int rowY = y + 66;
+            for (int index = 0; index < state->document->objectCount; ++index, rowY += 20) {
+                if (rowY > GetScreenHeight() - 48) break;
+                if (mouse.y >= rowY - 3 && mouse.y <= rowY + 16) {
+                    if (targetIndex) *targetIndex = index;
+                    return EDITOR_UI_SELECT_OBJECT;
+                }
+            }
+        }
+        return EDITOR_UI_NONE;
     }
     if (mouse.x < EDITOR_UI_LEFT_WIDTH && mouse.y >= EDITOR_UI_TOP_HEIGHT) {
         UIButton buttons[16];
@@ -253,6 +301,7 @@ EditorUIAction EditorUIHandleMouse(const EditorUIState *state, Vector2 mouse)
         buttons[count++] = Button(12, 206, 80, 32, "", EDITOR_UI_ADD_RAMP, false, state->mode == EDITOR_MODE_OBJECT);
         buttons[count++] = Button(12, 244, 80, 32, "", EDITOR_UI_ADD_MARKER, false, state->mode == EDITOR_MODE_OBJECT);
         buttons[count++] = Button(12, 282, 80, 32, "", EDITOR_UI_IMPORT_MODEL, false, state->mode == EDITOR_MODE_OBJECT);
+        buttons[count++] = Button(12, 320, 80, 32, "", EDITOR_UI_ADD_EMPTY, false, state->mode == EDITOR_MODE_OBJECT);
         if (state->mode == EDITOR_MODE_EDIT) {
             buttons[count++] = Button(12, 358, 80, 32, "", EDITOR_UI_SELECT_VERTEX, false, true);
             buttons[count++] = Button(12, 396, 80, 32, "", EDITOR_UI_SELECT_EDGE, false, true);
@@ -268,7 +317,7 @@ EditorUIAction EditorUIHandleMouse(const EditorUIState *state, Vector2 mouse)
             Button(210, 10, 94, 36, "", EDITOR_UI_SET_OBJECT_MODE, false, true), Button(310, 10, 94, 36, "", EDITOR_UI_SET_EDIT_MODE, false, state->selectedObject != NULL),
             Button(430, 10, 38, 36, "", EDITOR_UI_SET_MOVE, false, true), Button(472, 10, 38, 36, "", EDITOR_UI_SET_ROTATE, false, true),
             Button(514, 10, 38, 36, "", EDITOR_UI_SET_SCALE, false, true), Button(568, 10, 82, 36, "", EDITOR_UI_TOGGLE_SNAP, false, true),
-            Button(658, 10, 94, 36, "", EDITOR_UI_TOGGLE_COLLIDERS, false, true), Button(758, 10, 86, 36, "", EDITOR_UI_TOGGLE_CAMERA, false, true), Button(GetScreenWidth() - 246, 10, 70, 36, "", EDITOR_UI_NEW, false, true),
+            Button(658, 10, 94, 36, "", EDITOR_UI_TOGGLE_COLLIDERS, false, true), Button(758, 10, 86, 36, "", EDITOR_UI_TOGGLE_CAMERA, false, true), Button(850, 10, 68, 36, "", EDITOR_UI_COPY, false, state->selectedObject != NULL), Button(922, 10, 68, 36, "", EDITOR_UI_PASTE, false, true), Button(GetScreenWidth() - 246, 10, 70, 36, "", EDITOR_UI_NEW, false, true),
             Button(GetScreenWidth() - 170, 10, 70, 36, "", EDITOR_UI_SAVE, false, true), Button(GetScreenWidth() - 94, 10, 78, 36, "", EDITOR_UI_EXPORT, false, true)
         };
         return HitButtons(buttons, (int)(sizeof(buttons) / sizeof(buttons[0])), mouse);

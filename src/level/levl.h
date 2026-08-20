@@ -18,7 +18,8 @@ typedef enum LevlObjectType {
     LEVL_OBJECT_PLATFORM,
     LEVL_OBJECT_RAMP,
     LEVL_OBJECT_MODEL,
-    LEVL_OBJECT_MARKER
+    LEVL_OBJECT_MARKER,
+    LEVL_OBJECT_EMPTY
 } LevlObjectType;
 
 typedef struct LevlBoxData {
@@ -69,9 +70,15 @@ typedef struct LevlModelData {
     bool collidable;
 } LevlModelData;
 
+typedef struct LevlEmptyData {
+    Vector3 rotation;
+    Vector3 scale;
+} LevlEmptyData;
+
 typedef struct LevlObject {
     int id;
     LevlObjectType type;
+    int parentId;
     char name[LEVL_NAME_LENGTH];
     char tag[LEVL_TAG_LENGTH];
     Vector3 position;
@@ -81,6 +88,7 @@ typedef struct LevlObject {
         LevlPlatformData platform;
         LevlRampData ramp;
         LevlModelData model;
+        LevlEmptyData empty;
     } data;
 } LevlObject;
 
@@ -105,5 +113,9 @@ bool LevlObjectConvertBoxToMesh(LevlObject *object);
 int LevlMeshBuildEdges(const LevlMeshData *mesh, LevlMeshEdge *edges, int maxEdges);
 BoundingBox LevlMeshGetBounds(const LevlObject *object);
 bool LevlDocumentPlayerSpawnBlocked(const LevlDocument *document, Vector3 *blockedSpawn, bool inspectModelAssets);
+bool LevlObjectGetWorldTransform(const LevlDocument *document, const LevlObject *object,
+                                 Vector3 *position, Vector3 *rotation, Vector3 *scale);
+bool LevlObjectSetParent(LevlDocument *document, LevlObject *child, LevlObject *parent);
+void LevlDocumentBakeHierarchy(LevlDocument *document);
 
 #endif

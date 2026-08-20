@@ -91,16 +91,16 @@ static void DrawMeshCollision(const LevlObject *object)
     }
 }
 
-static Vector3 ModelCollisionVertex(const LevlObject *object, const Model *model, const Mesh *mesh, int index)
+static Vector3 ModelCollisionVertex(const LevlDocument *document, const LevlObject *object, const Mesh *mesh, int index)
 {
     Vector3 local = { mesh->vertices[index * 3], mesh->vertices[index * 3 + 1], mesh->vertices[index * 3 + 2] };
-    Matrix transform = MatrixMultiply(MatrixScale(object->data.model.scale.x, object->data.model.scale.y, object->data.model.scale.z),
-                                      MatrixRotateXYZ(Vector3Scale(object->data.model.rotation, DEG2RAD)));
-    (void)model;
-    return Vector3Add(object->position, Vector3Transform(local, transform));
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);
+    Matrix transform = MatrixMultiply(MatrixScale(scale.x, scale.y, scale.z), MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD)));
+    return Vector3Add(position, Vector3Transform(local, transform));
 }
 
-static void DrawModelCollision(const LevlObject *object, const Model *model)
+static void DrawModelCollision(const LevlDocument *document, const LevlObject *object, const Model *model)
 {
     if (!model || !IsModelValid(*model)) return;
     for (int meshIndex = 0; meshIndex < model->meshCount; ++meshIndex) {
@@ -109,9 +109,9 @@ static void DrawModelCollision(const LevlObject *object, const Model *model)
             int i0 = mesh->indices ? mesh->indices[triangle * 3] : triangle * 3;
             int i1 = mesh->indices ? mesh->indices[triangle * 3 + 1] : triangle * 3 + 1;
             int i2 = mesh->indices ? mesh->indices[triangle * 3 + 2] : triangle * 3 + 2;
-            Vector3 a = ModelCollisionVertex(object, model, mesh, i0);
-            Vector3 b = ModelCollisionVertex(object, model, mesh, i1);
-            Vector3 c = ModelCollisionVertex(object, model, mesh, i2);
+            Vector3 a = ModelCollisionVertex(document, object, mesh, i0);
+            Vector3 b = ModelCollisionVertex(document, object, mesh, i1);
+            Vector3 c = ModelCollisionVertex(document, object, mesh, i2);
             DrawLine3D(a, b, Fade(RED, 0.9f));
             DrawLine3D(b, c, Fade(RED, 0.9f));
             DrawLine3D(c, a, Fade(RED, 0.9f));
@@ -179,17 +179,32 @@ Model *EditorSceneGetModel(EditorModelCache *modelCache, int cacheCount, const L
     return NULL;
 }
 
-static void DrawModelObject(EditorModelCache *modelCache, int cacheCount, const LevlObject *object)
+static void DrawModelObject(const LevlDocument *document, EditorModelCache *modelCache, int cacheCount, const LevlObject *object)
 {
     Model *cached = EditorSceneGetModel(modelCache, cacheCount, object);
     if (!cached) {
-        DrawCubeV(object->position, object->data.model.collisionSize, MAROON);
+        Vector3 position, rotation, scale;
+        LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);
+        DrawCubeV(position, Vector3Multiply(object->data.model.collisionSize, scale), MAROON);
         return;
     }
     Model model = *cached;
-    Matrix rotation = MatrixRotateXYZ(Vector3Scale(object->data.model.rotation, DEG2RAD));
-    model.transform = MatrixMultiply(MatrixScale(object->data.model.scale.x, object->data.model.scale.y, object->data.model.scale.z), rotation);
-    DrawModel(model, object->position, 1.0f, WHITE);
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);
+    model.transform = MatrixMultiply(MatrixScale(scale.x, scale.y, scale.z), MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD)));
+    DrawModel(model, position, 1.0f, WHITE);
+}
+
+static void DrawEmpty(const LevlDocument *document, const LevlObject *object)
+{
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);
+    float size = fmaxf(0.18f, scale.x * 0.28f);
+    DrawSphere(position, size, Fade(YELLOW, 0.85f));
+    DrawLine3D(position, Vector3Add(position, (Vector3){ size * 2.5f, 0, 0 }), RED);
+    DrawLine3D(position, Vector3Add(position, (Vector3){ 0, size * 2.5f, 0 }), GREEN);
+    DrawLine3D(position, Vector3Add(position, (Vector3){ 0, 0, size * 2.5f }), BLUE);
+    (void)rotation;
 }
 
 static Vector3 GizmoOrigin(const LevlObject *object)
@@ -299,14 +314,15 @@ void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache
             case LEVL_OBJECT_MESH: DrawEditableMesh(object); break;
             case LEVL_OBJECT_PLATFORM: DrawPlatform(object); break;
             case LEVL_OBJECT_RAMP: DrawRamp(object); break;
-            case LEVL_OBJECT_MODEL: DrawModelObject(modelCache, cacheCount, object); break;
+            case LEVL_OBJECT_MODEL: DrawModelObject(document, modelCache, cacheCount, object); break;
             case LEVL_OBJECT_MARKER: DrawMarker(object, playerSpawnBlocked); break;
+            case LEVL_OBJECT_EMPTY: DrawEmpty(document, object); break;
         }
         BoundingBox bounds = LevlObjectGetBounds(object);
         if (showColliders && object->type == LEVL_OBJECT_MESH) DrawMeshCollision(object);
         else if (showColliders && object->type == LEVL_OBJECT_MODEL) {
             Model *model = EditorSceneGetModel(modelCache, cacheCount, object);
-            if (model) DrawModelCollision(object, model);
+            if (model) DrawModelCollision(document, object, model);
             else DrawBoundingBox(bounds, Fade(RED, 0.4f));
         } else if (showColliders && object->type == LEVL_OBJECT_BOX) DrawBoundingBox(bounds, Fade(RED, 0.4f));
         if (i == selectedIndex) DrawBoundingBox(bounds, YELLOW);

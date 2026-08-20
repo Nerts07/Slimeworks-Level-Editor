@@ -62,6 +62,7 @@ static EditorUIState MakeUIState(const Editor *editor)
         .mode = editor->mode, .gizmoMode = editor->gizmoMode, .meshSelectMode = editor->meshEdit.selectMode,
         .selectedObject = object, .snapEnabled = editor->snapEnabled, .showColliders = editor->showColliders,
         .dirty = editor->document.dirty, .playerSpawnBlocked = editor->playerSpawnBlocked,
+        .document = &editor->document, .parentingMode = editor->parentingMode,
         .meshSelectionCount = object ? EditorMeshEditSelectionCount(&editor->meshEdit, object) : 0,
         .gridStep = editor->gridStep, .cameraMode = EditorNavigationModeName(&editor->navigation),
         .status = editor->status, .statusSeconds = editor->statusSeconds
@@ -176,7 +177,16 @@ static void SelectAtMouse(Editor *editor)
         if (hit.hit && hit.distance < nearest) { nearest = hit.distance; found = i; }
     }
     editor->selectedIndex = found;
-    if (found >= 0) SetStatus(editor, TextFormat("Selected %s", editor->document.objects[found].name));
+    if (found >= 0 && editor->parentingMode) {
+        LevlObject *child = editor->parentingChildIndex >= 0 && editor->parentingChildIndex < editor->document.objectCount ?
+                            &editor->document.objects[editor->parentingChildIndex] : NULL;
+        LevlObject *parent = &editor->document.objects[found];
+        if (child && parent->type == LEVL_OBJECT_EMPTY && LevlObjectSetParent(&editor->document, child, parent)) {
+            editor->selectedIndex = editor->parentingChildIndex;
+            SetStatus(editor, TextFormat("Parented %s to %s", child->name, parent->name));
+        } else SetStatus(editor, "Parent must be a different Empty object");
+        editor->parentingMode = false;
+    } else if (found >= 0) SetStatus(editor, TextFormat("Selected %s", editor->document.objects[found].name));
 }
 
 static void MoveSelected(Editor *editor, Vector3 delta)
@@ -303,9 +313,14 @@ static void ToggleCollision(Editor *editor)
     SetStatus(editor, "Collider toggled");
 }
 
-static Vector3 GizmoOrigin(const LevlObject *object)
+static Vector3 GizmoOrigin(const Editor *editor, const LevlObject *object)
 {
     if (object->type == LEVL_OBJECT_PLATFORM) return (Vector3){ object->position.x, object->data.platform.top, object->position.z };
+    if (object->type == LEVL_OBJECT_MODEL || object->type == LEVL_OBJECT_EMPTY) {
+        Vector3 position, rotation, scale;
+        LevlObjectGetWorldTransform(&editor->document, object, &position, &rotation, &scale);
+        return position;
+    }
     return object->position;
 }
 
@@ -331,7 +346,7 @@ static float DistanceToSegment(Vector2 point, Vector2 a, Vector2 b)
 static bool EditGizmoOrigin(const Editor *editor, const LevlObject *object, Vector3 *origin, float *size)
 {
     if (!object || !origin || !size) return false;
-    *origin = GizmoOrigin(object);
+    *origin = GizmoOrigin(editor, object);
     *size = GizmoSize(object);
     if (editor->mode == EDITOR_MODE_EDIT) {
         if (!EditorMeshEditGetSelectionCenter(&editor->meshEdit, object, origin)) return false;
@@ -570,9 +585,22 @@ static void UpdateMeshEditControls(Editor *editor)
     }
 }
 
+static void CopySelectedObject(Editor *editor);
+static void PasteObject(Editor *editor);
+
 static bool UpdateSharedShortcuts(Editor *editor)
 {
     if (CommandOrControlHeld()) {
+        if (IsKeyPressed(KEY_C)) { CopySelectedObject(editor); return true; }
+        if (IsKeyPressed(KEY_V)) { PasteObject(editor); return true; }
+        if (IsKeyPressed(KEY_P)) {
+            if (SelectedObject(editor)) {
+                editor->parentingMode = true;
+                editor->parentingChildIndex = editor->selectedIndex;
+                SetStatus(editor, "Select an Empty object as parent");
+            }
+            return true;
+        }
         if (editor->mode == EDITOR_MODE_OBJECT && IsKeyPressed(KEY_TAB)) { SelectNext(editor); return true; }
         if (IsKeyPressed(KEY_S)) {
             char result[192];
@@ -615,7 +643,75 @@ static bool UpdateSharedShortcuts(Editor *editor)
     return false;
 }
 
-static void ApplyUIAction(Editor *editor, EditorUIAction action)
+static void CopySelectedObject(Editor *editor)
+{
+    LevlObject *object = SelectedObject(editor);
+    if (!object) return;
+    char clipboard[16384];
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(&editor->document, object, &position, &rotation, &scale);
+    if (object->type == LEVL_OBJECT_MODEL) {
+        snprintf(clipboard, sizeof(clipboard), "SLIMEWORKS_OBJECT MODEL %s %s %s %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %d %.4f %.4f %.4f",
+                 object->name, object->tag, object->data.model.assetPath, position.x, position.y, position.z,
+                 rotation.x, rotation.y, rotation.z, scale.x, scale.y, scale.z, object->data.model.collidable ? 1 : 0,
+                 object->data.model.collisionSize.x, object->data.model.collisionSize.y, object->data.model.collisionSize.z);
+    } else if (object->type == LEVL_OBJECT_EMPTY) {
+        snprintf(clipboard, sizeof(clipboard), "SLIMEWORKS_OBJECT EMPTY %s %s %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f",
+                 object->name, object->tag, position.x, position.y, position.z,
+                 rotation.x, rotation.y, rotation.z, scale.x, scale.y, scale.z);
+    } else {
+        SetStatus(editor, "Clipboard currently supports models and Empty objects");
+        return;
+    }
+    SetClipboardText(clipboard);
+    SetStatus(editor, TextFormat("Copied %s", object->name));
+}
+
+static void PasteObject(Editor *editor)
+{
+    const char *clipboard = GetClipboardText();
+    if (!clipboard || strncmp(clipboard, "SLIMEWORKS_OBJECT ", 19) != 0) {
+        SetStatus(editor, "Clipboard does not contain a Slimeworks model or Empty");
+        return;
+    }
+    LevlObject *object = NULL;
+    char type[16], name[LEVL_NAME_LENGTH], tag[LEVL_TAG_LENGTH], asset[LEVL_PATH_LENGTH];
+    float px, py, pz, rx, ry, rz, sx, sy, sz, cx, cy, cz;
+    int collidable;
+    if (sscanf(clipboard, "SLIMEWORKS_OBJECT %15s %31s %31s %255s %f %f %f %f %f %f %f %f %f %d %f %f %f",
+               type, name, tag, asset, &px, &py, &pz, &rx, &ry, &rz, &sx, &sy, &sz, &collidable,
+               &cx, &cy, &cz) == 17 && strcmp(type, "MODEL") == 0) {
+        object = LevlDocumentAdd(&editor->document, LEVL_OBJECT_MODEL);
+        if (!object) { SetStatus(editor, "Object limit reached (256)"); return; }
+        snprintf(object->name, sizeof(object->name), "%s_copy", name);
+        snprintf(object->tag, sizeof(object->tag), "%s", tag);
+        snprintf(object->data.model.assetPath, sizeof(object->data.model.assetPath), "%s", asset);
+        object->position = (Vector3){ px + 1.0f, py, pz + 1.0f };
+        object->data.model.rotation = (Vector3){ rx, ry, rz };
+        object->data.model.scale = (Vector3){ sx, sy, sz };
+        object->data.model.collidable = collidable != 0;
+        object->data.model.collisionSize = (Vector3){ cx, cy, cz };
+        editor->selectedIndex = editor->document.objectCount - 1;
+        SetStatus(editor, "Pasted model");
+        return;
+    }
+    if (sscanf(clipboard, "SLIMEWORKS_OBJECT %15s %31s %31s %f %f %f %f %f %f %f %f %f",
+               type, name, tag, &px, &py, &pz, &rx, &ry, &rz, &sx, &sy, &sz) == 12 && strcmp(type, "EMPTY") == 0) {
+        object = LevlDocumentAdd(&editor->document, LEVL_OBJECT_EMPTY);
+        if (!object) { SetStatus(editor, "Object limit reached (256)"); return; }
+        snprintf(object->name, sizeof(object->name), "%s_copy", name);
+        snprintf(object->tag, sizeof(object->tag), "%s", tag);
+        object->position = (Vector3){ px + 1.0f, py, pz + 1.0f };
+        object->data.empty.rotation = (Vector3){ rx, ry, rz };
+        object->data.empty.scale = (Vector3){ sx, sy, sz };
+        editor->selectedIndex = editor->document.objectCount - 1;
+        SetStatus(editor, "Pasted Empty");
+        return;
+    }
+    SetStatus(editor, "Clipboard data is invalid");
+}
+
+static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex)
 {
     LevlObject *object = SelectedObject(editor);
     char result[192];
@@ -637,6 +733,8 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action)
             LevlDocumentExportToGame(&editor->document, "../Slimeworks Factory/levels/factory.levl", result, (int)sizeof(result));
             SetStatus(editor, result);
             break;
+        case EDITOR_UI_COPY: CopySelectedObject(editor); break;
+        case EDITOR_UI_PASTE: PasteObject(editor); break;
         case EDITOR_UI_SET_OBJECT_MODE:
             if (editor->mode == EDITOR_MODE_EDIT) ToggleEditMode(editor);
             break;
@@ -664,6 +762,7 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action)
         case EDITOR_UI_ADD_PLATFORM: AddObject(editor, LEVL_OBJECT_PLATFORM); break;
         case EDITOR_UI_ADD_RAMP: AddObject(editor, LEVL_OBJECT_RAMP); break;
         case EDITOR_UI_ADD_MARKER: AddObject(editor, LEVL_OBJECT_MARKER); break;
+        case EDITOR_UI_ADD_EMPTY: AddObject(editor, LEVL_OBJECT_EMPTY); break;
         case EDITOR_UI_IMPORT_MODEL: BeginTextInput(editor, EDITOR_TEXT_IMPORT); break;
         case EDITOR_UI_SELECT_VERTEX: EditorMeshEditSetSelectMode(&editor->meshEdit, EDITOR_MESH_SELECT_VERTEX); SetStatus(editor, "Vertex select mode"); break;
         case EDITOR_UI_SELECT_EDGE: EditorMeshEditSetSelectMode(&editor->meshEdit, EDITOR_MESH_SELECT_EDGE); SetStatus(editor, "Edge select mode"); break;
@@ -684,6 +783,35 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action)
         case EDITOR_UI_FACE_COLOR: CycleFaceColor(editor); break;
         case EDITOR_UI_RENAME: BeginTextInput(editor, EDITOR_TEXT_NAME); break;
         case EDITOR_UI_SET_TAG: BeginTextInput(editor, EDITOR_TEXT_TAG); break;
+        case EDITOR_UI_SET_PARENT:
+            if (object) {
+                editor->parentingMode = true;
+                editor->parentingChildIndex = editor->selectedIndex;
+                SetStatus(editor, "Select an Empty in the hierarchy as parent");
+            }
+            break;
+        case EDITOR_UI_CLEAR_PARENT:
+            if (object && LevlObjectSetParent(&editor->document, object, NULL)) SetStatus(editor, "Parent cleared");
+            break;
+        case EDITOR_UI_SELECT_OBJECT:
+            if (targetIndex < 0 || targetIndex >= editor->document.objectCount) break;
+            if (editor->parentingMode) {
+                LevlObject *child = editor->parentingChildIndex >= 0 && editor->parentingChildIndex < editor->document.objectCount ?
+                                    &editor->document.objects[editor->parentingChildIndex] : NULL;
+                LevlObject *parent = &editor->document.objects[targetIndex];
+                if (child && parent->type == LEVL_OBJECT_EMPTY && LevlObjectSetParent(&editor->document, child, parent)) {
+                    editor->selectedIndex = editor->parentingChildIndex;
+                    SetStatus(editor, TextFormat("Parented %s to %s", child->name, parent->name));
+                } else SetStatus(editor, "Parent must be a different Empty object");
+                editor->parentingMode = false;
+            } else {
+                if (editor->mode == EDITOR_MODE_EDIT && editor->document.objects[targetIndex].type != LEVL_OBJECT_MESH) {
+                    ToggleEditMode(editor);
+                }
+                editor->selectedIndex = targetIndex;
+                SetStatus(editor, TextFormat("Selected %s", editor->document.objects[targetIndex].name));
+            }
+            break;
         case EDITOR_UI_BOX_BEVEL_UP:
             if (object && object->type == LEVL_OBJECT_BOX) { object->data.box.bevel += 0.05f; editor->document.dirty = true; SetStatus(editor, "Bevel increased"); }
             break;
@@ -709,8 +837,9 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action)
 static void UpdateEditorControls(Editor *editor, float deltaTime)
 {
     EditorUIState uiState = MakeUIState(editor);
-    EditorUIAction uiAction = EditorUIHandleMouse(&uiState, GetMousePosition());
-    if (uiAction != EDITOR_UI_NONE) { ApplyUIAction(editor, uiAction); return; }
+    int targetIndex = -1;
+    EditorUIAction uiAction = EditorUIHandleMouse(&uiState, GetMousePosition(), &targetIndex);
+    if (uiAction != EDITOR_UI_NONE) { ApplyUIAction(editor, uiAction, targetIndex); return; }
     if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT) && !EditorUIIsViewportPoint(GetMousePosition())) return;
     if (EditorNavigationUpdate(&editor->navigation, &editor->camera, deltaTime)) return;
     if (EditorNavigationHandleViewShortcuts(&editor->navigation, &editor->camera)) {

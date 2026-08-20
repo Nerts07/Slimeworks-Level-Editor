@@ -85,6 +85,7 @@ const char *LevlObjectTypeName(LevlObjectType type)
         case LEVL_OBJECT_RAMP: return "Ramp";
         case LEVL_OBJECT_MODEL: return "Model";
         case LEVL_OBJECT_MARKER: return "Marker";
+        case LEVL_OBJECT_EMPTY: return "Empty";
         default: return "Unknown";
     }
 }
@@ -118,6 +119,8 @@ LevlObject *LevlDocumentAdd(LevlDocument *document, LevlObjectType type)
         object->data.model.scale = (Vector3){ 1.0f, 1.0f, 1.0f };
         object->data.model.collisionSize = (Vector3){ 1.0f, 1.0f, 1.0f };
         object->data.model.collidable = true;
+    } else if (type == LEVL_OBJECT_EMPTY) {
+        object->data.empty.scale = (Vector3){ 1.0f, 1.0f, 1.0f };
     }
     document->dirty = true;
     return object;
@@ -171,6 +174,107 @@ BoundingBox LevlMeshGetBounds(const LevlObject *object)
         if (vertex.z > bounds.max.z) bounds.max.z = vertex.z;
     }
     return bounds;
+}
+
+static LevlObject *FindObjectById(LevlDocument *document, int id)
+{
+    if (!document || id <= 0) return NULL;
+    for (int i = 0; i < document->objectCount; ++i) if (document->objects[i].id == id) return &document->objects[i];
+    return NULL;
+}
+
+static const LevlObject *FindObjectByIdConst(const LevlDocument *document, int id)
+{
+    return FindObjectById((LevlDocument *)document, id);
+}
+
+static void LocalTransform(const LevlObject *object, Vector3 *position, Vector3 *rotation, Vector3 *scale)
+{
+    *position = object->position;
+    *rotation = (Vector3){ 0 };
+    *scale = (Vector3){ 1.0f, 1.0f, 1.0f };
+    if (object->type == LEVL_OBJECT_MODEL) {
+        *rotation = object->data.model.rotation;
+        *scale = object->data.model.scale;
+    } else if (object->type == LEVL_OBJECT_EMPTY) {
+        *rotation = object->data.empty.rotation;
+        *scale = object->data.empty.scale;
+    } else if (object->type == LEVL_OBJECT_BOX) {
+        *rotation = object->data.box.rotation;
+    }
+}
+
+bool LevlObjectGetWorldTransform(const LevlDocument *document, const LevlObject *object,
+                                Vector3 *position, Vector3 *rotation, Vector3 *scale)
+{
+    if (!document || !object || !position || !rotation || !scale) return false;
+    LocalTransform(object, position, rotation, scale);
+    const LevlObject *parent = FindObjectByIdConst(document, object->parentId);
+    if (!parent || parent == object) return true;
+    Vector3 parentPosition, parentRotation, parentScale;
+    LevlObjectGetWorldTransform(document, parent, &parentPosition, &parentRotation, &parentScale);
+    Matrix parentRotationMatrix = MatrixRotateXYZ(Vector3Scale(parentRotation, DEG2RAD));
+    Vector3 scaledLocal = Vector3Multiply(*position, parentScale);
+    *position = Vector3Add(parentPosition, Vector3Transform(scaledLocal, parentRotationMatrix));
+    *rotation = Vector3Add(parentRotation, *rotation);
+    *scale = Vector3Multiply(parentScale, *scale);
+    return true;
+}
+
+static bool IsDescendant(const LevlDocument *document, const LevlObject *candidate, int ancestorId)
+{
+    int parentId = candidate ? candidate->parentId : 0;
+    for (int depth = 0; depth < LEVL_MAX_OBJECTS && parentId > 0; ++depth) {
+        if (parentId == ancestorId) return true;
+        const LevlObject *parent = FindObjectByIdConst(document, parentId);
+        if (!parent) break;
+        parentId = parent->parentId;
+    }
+    return false;
+}
+
+bool LevlObjectSetParent(LevlDocument *document, LevlObject *child, LevlObject *parent)
+{
+    if (!document || !child || child == parent || (parent && IsDescendant(document, parent, child->id))) return false;
+    Vector3 worldPosition, worldRotation, worldScale;
+    LevlObjectGetWorldTransform(document, child, &worldPosition, &worldRotation, &worldScale);
+    child->parentId = parent ? parent->id : 0;
+    if (!parent) {
+        child->position = worldPosition;
+        if (child->type == LEVL_OBJECT_MODEL) { child->data.model.rotation = worldRotation; child->data.model.scale = worldScale; }
+        if (child->type == LEVL_OBJECT_EMPTY) { child->data.empty.rotation = worldRotation; child->data.empty.scale = worldScale; }
+    } else {
+        Vector3 parentPosition, parentRotation, parentScale;
+        LevlObjectGetWorldTransform(document, parent, &parentPosition, &parentRotation, &parentScale);
+        Matrix inverseRotation = MatrixInvert(MatrixRotateXYZ(Vector3Scale(parentRotation, DEG2RAD)));
+        child->position = Vector3Multiply(Vector3Transform(Vector3Subtract(worldPosition, parentPosition), inverseRotation),
+                                          (Vector3){ 1.0f / fmaxf(parentScale.x, 0.0001f), 1.0f / fmaxf(parentScale.y, 0.0001f), 1.0f / fmaxf(parentScale.z, 0.0001f) });
+        if (child->type == LEVL_OBJECT_MODEL) {
+            child->data.model.rotation = Vector3Subtract(worldRotation, parentRotation);
+            child->data.model.scale = Vector3Divide(worldScale, parentScale);
+        }
+        if (child->type == LEVL_OBJECT_EMPTY) {
+            child->data.empty.rotation = Vector3Subtract(worldRotation, parentRotation);
+            child->data.empty.scale = Vector3Divide(worldScale, parentScale);
+        }
+    }
+    document->dirty = true;
+    return true;
+}
+
+void LevlDocumentBakeHierarchy(LevlDocument *document)
+{
+    if (!document) return;
+    for (int i = 0; i < document->objectCount; ++i) {
+        LevlObject *object = &document->objects[i];
+        if (object->parentId == 0) continue;
+        Vector3 position, rotation, scale;
+        LevlObjectGetWorldTransform(document, object, &position, &rotation, &scale);
+        object->position = position;
+        if (object->type == LEVL_OBJECT_MODEL) { object->data.model.rotation = rotation; object->data.model.scale = scale; }
+        if (object->type == LEVL_OBJECT_EMPTY) { object->data.empty.rotation = rotation; object->data.empty.scale = scale; }
+        object->parentId = 0;
+    }
 }
 
 static bool PointInsideMesh(const LevlObject *object, Vector3 point)
@@ -311,11 +415,14 @@ void LevlDocumentNew(LevlDocument *document)
 bool LevlDocumentRemove(LevlDocument *document, int index)
 {
     if (index < 0 || index >= document->objectCount) return false;
+    int removedId = document->objects[index].id;
     if (index + 1 < document->objectCount) {
         memmove(&document->objects[index], &document->objects[index + 1],
                 (size_t)(document->objectCount - index - 1) * sizeof(document->objects[0]));
     }
     document->objectCount--;
+    for (int child = 0; child < document->objectCount; ++child)
+        if (document->objects[child].parentId == removedId) document->objects[child].parentId = 0;
     document->dirty = true;
     return true;
 }
@@ -388,8 +495,16 @@ static bool WriteDocument(const LevlDocument *document, const char *filePath, ch
                 fprintf(file, "MARKER %s %s %.3f %.3f %.3f\n", object->name, object->tag,
                         object->position.x, object->position.y, object->position.z);
                 break;
+            case LEVL_OBJECT_EMPTY:
+                fprintf(file, "EMPTY %s %s %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f %.3f\n", object->name, object->tag,
+                        object->position.x, object->position.y, object->position.z,
+                        object->data.empty.rotation.x, object->data.empty.rotation.y, object->data.empty.rotation.z,
+                        object->data.empty.scale.x, object->data.empty.scale.y, object->data.empty.scale.z);
+                break;
         }
     }
+    for (int i = 0; i < document->objectCount; ++i) if (document->objects[i].parentId > 0)
+        fprintf(file, "PARENT %d %d\n", document->objects[i].id, document->objects[i].parentId);
     fprintf(file, "END\n");
     fclose(file);
     SetMessage(message, messageSize, "Saved .levl");
@@ -449,6 +564,14 @@ bool LevlDocumentLoad(LevlDocument *document, const char *filePath, char *messag
         }
         if (strncmp(line, "LEVEL ", 6) == 0) { CopyString(parsed.name, sizeof(parsed.name), line + 6); continue; }
         if (strcmp(line, "END") == 0) break;
+        if (strncmp(line, "PARENT ", 7) == 0) {
+            int childId, parentId;
+            if (sscanf(line, "PARENT %d %d", &childId, &parentId) != 2 || !FindObjectById(&parsed, childId)) goto parse_error;
+            LevlObject *child = FindObjectById(&parsed, childId);
+            if (parentId != 0 && !FindObjectById(&parsed, parentId)) goto parse_error;
+            child->parentId = parentId;
+            continue;
+        }
 
         LevlObject *object = NULL;
         if (strncmp(line, "PLATFORM ", 9) == 0) {
@@ -530,6 +653,12 @@ bool LevlDocumentLoad(LevlDocument *document, const char *filePath, char *messag
             object = LevlDocumentAdd(&parsed, LEVL_OBJECT_MARKER);
             if (sscanf(line, "MARKER %31s %31s %f %f %f", object->name, object->tag,
                        &object->position.x, &object->position.y, &object->position.z) != 5) goto parse_error;
+        } else if (strncmp(line, "EMPTY ", 6) == 0) {
+            object = LevlDocumentAdd(&parsed, LEVL_OBJECT_EMPTY);
+            if (sscanf(line, "EMPTY %31s %31s %f %f %f %f %f %f %f %f %f", object->name, object->tag,
+                       &object->position.x, &object->position.y, &object->position.z,
+                       &object->data.empty.rotation.x, &object->data.empty.rotation.y, &object->data.empty.rotation.z,
+                       &object->data.empty.scale.x, &object->data.empty.scale.y, &object->data.empty.scale.z) != 11) goto parse_error;
         } else goto parse_error;
         lastBox = NULL;
     }
@@ -587,7 +716,9 @@ bool LevlDocumentExportToGame(const LevlDocument *document, const char *gameLeve
         SetMessage(message, messageSize, "Could not create game's levels directory");
         return false;
     }
-    if (!WriteDocument(document, gameLevelPath, message, messageSize)) return false;
+    LevlDocument exportDocument = *document;
+    LevlDocumentBakeHierarchy(&exportDocument);
+    if (!WriteDocument(&exportDocument, gameLevelPath, message, messageSize)) return false;
 
     char sourceDirectory[LEVL_PATH_LENGTH], sourceAssets[512], destinationAssets[512];
     GetDirectory(document->filePath, sourceDirectory, sizeof(sourceDirectory));

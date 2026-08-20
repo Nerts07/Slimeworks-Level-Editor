@@ -18,6 +18,8 @@ typedef enum EditorUIAction {
     EDITOR_UI_NEW,
     EDITOR_UI_SAVE,
     EDITOR_UI_EXPORT,
+    EDITOR_UI_COPY,
+    EDITOR_UI_PASTE,
     EDITOR_UI_SET_OBJECT_MODE,
     EDITOR_UI_SET_EDIT_MODE,
     EDITOR_UI_TOGGLE_EDIT,
@@ -32,6 +34,7 @@ typedef enum EditorUIAction {
     EDITOR_UI_ADD_PLATFORM,
     EDITOR_UI_ADD_RAMP,
     EDITOR_UI_ADD_MARKER,
+    EDITOR_UI_ADD_EMPTY,
     EDITOR_UI_IMPORT_MODEL,
     EDITOR_UI_SELECT_VERTEX,
     EDITOR_UI_SELECT_EDGE,
@@ -48,7 +51,10 @@ typedef enum EditorUIAction {
     EDITOR_UI_BOX_SUBDIVISION_UP,
     EDITOR_UI_BOX_SUBDIVISION_DOWN,
     EDITOR_UI_FACE_COLOR,
-    EDITOR_UI_DELETE
+    EDITOR_UI_DELETE,
+    EDITOR_UI_SELECT_OBJECT,
+    EDITOR_UI_SET_PARENT,
+    EDITOR_UI_CLEAR_PARENT
 } EditorUIAction;
 
 typedef struct EditorUIState {
@@ -56,6 +62,7 @@ typedef struct EditorUIState {
     EditorGizmoMode gizmoMode;
     EditorMeshSelectMode meshSelectMode;
     const LevlObject *selectedObject;
+    const LevlDocument *document;
     bool snapEnabled;
     bool showColliders;
     bool dirty;
@@ -65,9 +72,10 @@ typedef struct EditorUIState {
     const char *cameraMode;
     const char *status;
     float statusSeconds;
+    bool parentingMode;
 } EditorUIState;
 
-EditorUIAction EditorUIHandleMouse(const EditorUIState *state, Vector2 mouse);
+EditorUIAction EditorUIHandleMouse(const EditorUIState *state, Vector2 mouse, int *targetIndex);
 bool EditorUIIsViewportPoint(Vector2 point);
 void EditorUIDraw(const EditorUIState *state);
 

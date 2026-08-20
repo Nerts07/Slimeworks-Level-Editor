@@ -29,6 +29,8 @@ END
 | `FACE` | `vertexCount index0 index1 index2 index3 r g b a`; сейчас поддерживаются треугольники и quad-грани |
 | `MODEL` | `name tag assetPath posX posY posZ rotX rotY rotZ scaleX scaleY scaleZ collidable colliderX colliderY colliderZ` |
 | `MARKER` | `name tag x y z` |
+| `EMPTY` | `name tag posX posY posZ rotX rotY rotZ scaleX scaleY scaleZ` |
+| `PARENT` | `childObjectId parentObjectId`; связь объекта с Empty/другим объектом |
 
 `collidable` равен `1` для физического препятствия и `0` для декора. Для Mesh и импортированных моделей игра использует полигоны исходной геометрии; верхние грани участвуют в определении земли, а боковые — в столкновениях игрока. Боксы используют обычную box-коллизию, площадки и склоны автоматически участвуют в определении земли и наклона.
 
