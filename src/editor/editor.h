@@ -42,6 +42,7 @@ typedef struct Editor {
     Camera3D camera;
     EditorNavigation navigation;
     int selectedIndex;
+    bool selected[LEVL_MAX_OBJECTS];
     int selectedFace;
     EditorMode mode;
     EditorMeshEdit meshEdit;

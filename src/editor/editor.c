@@ -54,6 +54,39 @@ static LevlObject *SelectedObject(Editor *editor)
     return &editor->document.objects[editor->selectedIndex];
 }
 
+static void SelectOnly(Editor *editor, int index)
+{
+    memset(editor->selected, 0, sizeof(editor->selected));
+    if (index >= 0 && index < editor->document.objectCount) editor->selected[index] = true;
+    editor->selectedIndex = index;
+}
+
+static bool IsSelected(const Editor *editor, int index)
+{
+    return index >= 0 && index < editor->document.objectCount && editor->selected[index];
+}
+
+static bool ShiftHeld(void);
+
+static bool HasSelectedAncestor(const Editor *editor, const LevlObject *object)
+{
+    int parentId = object ? object->parentId : 0;
+    while (parentId > 0) {
+        for (int i = 0; i < editor->document.objectCount; ++i) {
+            if (editor->document.objects[i].id != parentId) continue;
+            if (IsSelected(editor, i)) return true;
+            parentId = editor->document.objects[i].parentId;
+            break;
+        }
+        if (parentId > 0) {
+            bool exists = false;
+            for (int i = 0; i < editor->document.objectCount; ++i) if (editor->document.objects[i].id == parentId) { exists = true; break; }
+            if (!exists) break;
+        }
+    }
+    return false;
+}
+
 static EditorUIState MakeUIState(const Editor *editor)
 {
     const LevlObject *object = editor->selectedIndex >= 0 && editor->selectedIndex < editor->document.objectCount ?
@@ -109,7 +142,7 @@ static void MakeIdentifier(char *destination, size_t destinationSize, const char
 static void SelectNext(Editor *editor)
 {
     if (editor->document.objectCount == 0) { editor->selectedIndex = -1; return; }
-    editor->selectedIndex = (editor->selectedIndex + 1) % editor->document.objectCount;
+    SelectOnly(editor, (editor->selectedIndex + 1) % editor->document.objectCount);
     SetStatus(editor, "Selected next object");
 }
 
@@ -162,7 +195,7 @@ static void AddObject(Editor *editor, LevlObjectType type)
     if (type == LEVL_OBJECT_RAMP) {
         object->data.ramp.end = Vector3Add(object->position, (Vector3){ 7.0f, 2.0f, 0.0f });
     }
-    editor->selectedIndex = editor->document.objectCount - 1;
+    SelectOnly(editor, editor->document.objectCount - 1);
     SetStatus(editor, TextFormat("Added %s", LevlObjectTypeName(type)));
 }
 
@@ -176,35 +209,67 @@ static void SelectAtMouse(Editor *editor)
         RayCollision hit = GetRayCollisionBox(ray, LevlObjectGetWorldBounds(&editor->document, &editor->document.objects[i]));
         if (hit.hit && hit.distance < nearest) { nearest = hit.distance; found = i; }
     }
-    editor->selectedIndex = found;
     if (found >= 0 && editor->parentingMode) {
         LevlObject *child = editor->parentingChildIndex >= 0 && editor->parentingChildIndex < editor->document.objectCount ?
                             &editor->document.objects[editor->parentingChildIndex] : NULL;
         LevlObject *parent = &editor->document.objects[found];
         if (child && LevlObjectSetParent(&editor->document, child, parent)) {
-            editor->selectedIndex = editor->parentingChildIndex;
+            SelectOnly(editor, editor->parentingChildIndex);
             SetStatus(editor, TextFormat("Parented %s to %s", child->name, parent->name));
         } else SetStatus(editor, "Parent must be a different object");
         editor->parentingMode = false;
+        return;
     } else if (found >= 0) SetStatus(editor, TextFormat("Selected %s", editor->document.objects[found].name));
+    if (found < 0) {
+        if (!ShiftHeld()) SelectOnly(editor, -1);
+        return;
+    }
+    if (editor->parentingMode) return;
+    if (ShiftHeld()) {
+        editor->selected[found] = !editor->selected[found];
+        if (editor->selected[found]) editor->selectedIndex = found;
+        else if (editor->selectedIndex == found) {
+            editor->selectedIndex = -1;
+            for (int i = 0; i < editor->document.objectCount; ++i) if (editor->selected[i]) { editor->selectedIndex = i; break; }
+        }
+    } else SelectOnly(editor, found);
 }
 
 static void MoveSelected(Editor *editor, Vector3 delta)
 {
-    LevlObject *object = SelectedObject(editor);
-    if (!object) return;
-    object->position = Vector3Add(object->position, delta);
-    if (object->type == LEVL_OBJECT_RAMP) object->data.ramp.end = Vector3Add(object->data.ramp.end, delta);
-    if (object->type == LEVL_OBJECT_PLATFORM && fabsf(delta.y) > 0.001f) {
-        object->data.platform.top += delta.y;
-        object->position.y = 0.0f;
+    bool moved = false;
+    for (int i = 0; i < editor->document.objectCount; ++i) {
+        LevlObject *object = &editor->document.objects[i];
+        if (!IsSelected(editor, i) || HasSelectedAncestor(editor, object)) continue;
+        object->position = Vector3Add(object->position, delta);
+        if (object->type == LEVL_OBJECT_RAMP) object->data.ramp.end = Vector3Add(object->data.ramp.end, delta);
+        if (object->type == LEVL_OBJECT_PLATFORM && fabsf(delta.y) > 0.001f) {
+            object->data.platform.top += delta.y;
+            object->position.y = 0.0f;
+        }
+        if (editor->snapEnabled) {
+            object->position = SnapVector(object->position, editor->gridStep);
+            if (object->type == LEVL_OBJECT_RAMP) object->data.ramp.end = SnapVector(object->data.ramp.end, editor->gridStep);
+            if (object->type == LEVL_OBJECT_PLATFORM) object->data.platform.top = SnapValue(object->data.platform.top, editor->gridStep);
+        }
+        moved = true;
     }
-    if (editor->snapEnabled) {
-        object->position = SnapVector(object->position, editor->gridStep);
-        if (object->type == LEVL_OBJECT_RAMP) object->data.ramp.end = SnapVector(object->data.ramp.end, editor->gridStep);
-        if (object->type == LEVL_OBJECT_PLATFORM) object->data.platform.top = SnapValue(object->data.platform.top, editor->gridStep);
+    if (moved) editor->document.dirty = true;
+}
+
+static void DeleteSelected(Editor *editor)
+{
+    bool removed = false;
+    for (int index = editor->document.objectCount - 1; index >= 0; --index) {
+        if (!IsSelected(editor, index)) continue;
+        removed |= LevlDocumentRemove(&editor->document, index);
     }
-    editor->document.dirty = true;
+    if (removed) {
+        SelectOnly(editor, editor->document.objectCount > 0 ? editor->document.objectCount - 1 : -1);
+        editor->mode = EDITOR_MODE_OBJECT;
+        EditorMeshEditReset(&editor->meshEdit);
+        SetStatus(editor, "Selected objects removed");
+    }
 }
 
 static void ResizeSelected(Editor *editor, float amount)
@@ -245,7 +310,7 @@ static void FinishTextInput(Editor *editor)
         if (editor->textBuffer[0]) {
             ModelImportAdd(&editor->document, editor->textBuffer, result, (int)sizeof(result));
             SetStatus(editor, result);
-            if (editor->document.objectCount > 0) editor->selectedIndex = editor->document.objectCount - 1;
+            if (editor->document.objectCount > 0) SelectOnly(editor, editor->document.objectCount - 1);
         }
     } else if (object && editor->textBuffer[0]) {
         char identifier[LEVL_PATH_LENGTH];
@@ -616,7 +681,7 @@ static bool UpdateSharedShortcuts(Editor *editor)
             if (LevlDocumentLoad(&editor->document, "level.levl", result, (int)sizeof(result))) {
                 EditorSceneUnloadModels(editor->modelCache, LEVL_MAX_OBJECTS);
                 memset(editor->modelCache, 0, sizeof(editor->modelCache));
-                editor->selectedIndex = editor->document.objectCount ? 0 : -1;
+                SelectOnly(editor, editor->document.objectCount ? 0 : -1);
                 editor->mode = EDITOR_MODE_OBJECT;
                 EditorMeshEditReset(&editor->meshEdit);
             }
@@ -726,7 +791,7 @@ static void PasteObject(Editor *editor)
                 object->id = newId;
                 object->parentId = 0;
                 snprintf(object->name, sizeof(object->name), "%s_copy", copy.name);
-                editor->selectedIndex = editor->document.objectCount - 1;
+                SelectOnly(editor, editor->document.objectCount - 1);
                 SetStatus(editor, TextFormat("Pasted %s", LevlObjectTypeName(object->type)));
                 return;
             }
@@ -753,7 +818,7 @@ static void PasteObject(Editor *editor)
         object->data.model.scale = (Vector3){ sx, sy, sz };
         object->data.model.collidable = collidable != 0;
         object->data.model.collisionSize = (Vector3){ cx, cy, cz };
-        editor->selectedIndex = editor->document.objectCount - 1;
+        SelectOnly(editor, editor->document.objectCount - 1);
         SetStatus(editor, "Pasted model");
         return;
     }
@@ -766,7 +831,7 @@ static void PasteObject(Editor *editor)
         object->position = (Vector3){ px + 1.0f, py, pz + 1.0f };
         object->data.empty.rotation = (Vector3){ rx, ry, rz };
         object->data.empty.scale = (Vector3){ sx, sy, sz };
-        editor->selectedIndex = editor->document.objectCount - 1;
+        SelectOnly(editor, editor->document.objectCount - 1);
         SetStatus(editor, "Pasted Empty");
         return;
     }
@@ -782,7 +847,7 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
             EditorSceneUnloadModels(editor->modelCache, LEVL_MAX_OBJECTS);
             memset(editor->modelCache, 0, sizeof(editor->modelCache));
             LevlDocumentNew(&editor->document);
-            editor->selectedIndex = 0;
+            SelectOnly(editor, 0);
             editor->mode = EDITOR_MODE_OBJECT;
             EditorMeshEditReset(&editor->meshEdit);
             SetStatus(editor, "New starter level created");
@@ -869,7 +934,7 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
                                     &editor->document.objects[editor->parentingChildIndex] : NULL;
                 LevlObject *parent = &editor->document.objects[targetIndex];
                 if (child && LevlObjectSetParent(&editor->document, child, parent)) {
-                    editor->selectedIndex = editor->parentingChildIndex;
+                    SelectOnly(editor, editor->parentingChildIndex);
                     SetStatus(editor, TextFormat("Parented %s to %s", child->name, parent->name));
                 } else SetStatus(editor, "Parent must be a different object");
                 editor->parentingMode = false;
@@ -881,7 +946,7 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
                         ToggleEditMode(editor);
                     }
                 }
-                editor->selectedIndex = targetIndex;
+                SelectOnly(editor, targetIndex);
                 SetStatus(editor, TextFormat("Selected %s", editor->document.objects[targetIndex].name));
             }
             break;
@@ -898,10 +963,7 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
             if (object && object->type == LEVL_OBJECT_BOX && object->data.box.subdivisions > 1) { object->data.box.subdivisions--; editor->document.dirty = true; SetStatus(editor, "Subdivision decreased"); }
             break;
         case EDITOR_UI_DELETE:
-            if (LevlDocumentRemove(&editor->document, editor->selectedIndex)) {
-                if (editor->selectedIndex >= editor->document.objectCount) editor->selectedIndex = editor->document.objectCount - 1;
-                SetStatus(editor, "Object removed");
-            }
+            DeleteSelected(editor);
             break;
         default: break;
     }
@@ -945,7 +1007,7 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
         EditorSceneUnloadModels(editor->modelCache, LEVL_MAX_OBJECTS);
         memset(editor->modelCache, 0, sizeof(editor->modelCache));
         LevlDocumentNew(&editor->document);
-        editor->selectedIndex = 0;
+        SelectOnly(editor, 0);
         editor->mode = EDITOR_MODE_OBJECT;
         EditorMeshEditReset(&editor->meshEdit);
         SetStatus(editor, "New starter level created");
@@ -960,10 +1022,7 @@ static void UpdateEditorControls(Editor *editor, float deltaTime)
     if (IsKeyPressed(KEY_T)) BeginTextInput(editor, EDITOR_TEXT_TAG);
     if (IsKeyPressed(KEY_H)) editor->showColliders = !editor->showColliders;
     if (IsKeyPressed(KEY_DELETE)) {
-        if (LevlDocumentRemove(&editor->document, editor->selectedIndex)) {
-            if (editor->selectedIndex >= editor->document.objectCount) editor->selectedIndex = editor->document.objectCount - 1;
-            SetStatus(editor, "Object removed");
-        }
+        DeleteSelected(editor);
     }
 
     object = SelectedObject(editor);
@@ -1100,6 +1159,7 @@ void EditorInit(Editor *editor)
     EditorNavigationInit(&editor->navigation, &editor->camera);
     EditorMeshEditReset(&editor->meshEdit);
     LevlDocumentNew(&editor->document);
+    SelectOnly(editor, 0);
     SetStatus(editor, "Starter level ready — F6 exports it to the game");
 }
 
@@ -1115,7 +1175,7 @@ void EditorRun(Editor *editor)
         BeginDrawing();
         ClearBackground((Color){ 36, 62, 83, 255 });
         BeginMode3D(editor->camera);
-        EditorSceneDraw(&editor->document, editor->selectedIndex, editor->modelCache, LEVL_MAX_OBJECTS,
+        EditorSceneDraw(&editor->document, editor->selectedIndex, editor->selected, editor->modelCache, LEVL_MAX_OBJECTS,
                         editor->showColliders, editor->playerSpawnBlocked, &editor->camera,
                         EditorNavigationIsOrthographic(&editor->navigation), editor->gridStep);
         LevlObject *selected = SelectedObject(editor);

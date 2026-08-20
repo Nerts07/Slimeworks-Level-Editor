@@ -339,7 +339,7 @@ static void DrawInfiniteGrid(const Camera3D *camera, bool orthographic, float gr
     }
 }
 
-void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache *modelCache, int cacheCount,
+void EditorSceneDraw(LevlDocument *document, int selectedIndex, const bool *selection, EditorModelCache *modelCache, int cacheCount,
                      bool showColliders, bool playerSpawnBlocked, const Camera3D *camera, bool orthographicGrid, float gridStep)
 {
     DrawInfiniteGrid(camera, orthographicGrid, gridStep);
@@ -361,7 +361,7 @@ void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache
             if (model) DrawModelCollision(document, object, model);
             else DrawBoundingBox(bounds, Fade(RED, 0.4f));
         } else if (showColliders && object->type == LEVL_OBJECT_BOX) DrawBoundingBox(bounds, Fade(RED, 0.4f));
-        if (i == selectedIndex) DrawBoundingBox(bounds, YELLOW);
+        if ((selection && selection[i]) || (!selection && i == selectedIndex)) DrawBoundingBox(bounds, YELLOW);
     }
 }
 

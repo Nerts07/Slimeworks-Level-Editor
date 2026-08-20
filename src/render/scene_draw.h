@@ -16,7 +16,7 @@ typedef enum EditorGizmoMode {
     EDITOR_GIZMO_SCALE
 } EditorGizmoMode;
 
-void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache *modelCache, int cacheCount,
+void EditorSceneDraw(LevlDocument *document, int selectedIndex, const bool *selection, EditorModelCache *modelCache, int cacheCount,
                      bool showColliders, bool playerSpawnBlocked, const Camera3D *camera, bool orthographicGrid, float gridStep);
 void EditorSceneDrawGizmo(const LevlDocument *document, const LevlObject *object, EditorGizmoMode mode, int highlightedAxis);
 void EditorSceneDrawGizmoAt(Vector3 origin, float size, EditorGizmoMode mode, int highlightedAxis);
