@@ -32,7 +32,7 @@ make
 | Free mode | `Shift` + `]`; удерживать ПКМ или MMB + `WASD`, `Q`/`E` и мышь; повторить `Shift` + `]` для orbit |
 | Ортографический вид — macOS и Windows | `Ctrl+1/2` — front/back, `Ctrl+3/4` — right/left, `Ctrl+5/6` — top/bottom; `Ctrl+7` — top |
 | Object/Edit Mode | `Tab` — перейти в Edit Mode или обратно; `Ctrl`/`Cmd` + `Tab` — следующий объект |
-| Clipboard | `Ctrl`/`Cmd` + `C` — копировать Model/Empty; `Ctrl`/`Cmd` + `V` — вставить со смещением |
+| Clipboard | `Ctrl`/`Cmd` + `C` — копировать любой объект; `Ctrl`/`Cmd` + `V` — вставить со смещением |
 | Иерархия | Выберите объект → `SET PARENT`, затем выберите любой объект в дереве справа или во viewport; `CLEAR PARENT` снимает связь |
 | Выделение объекта | ЛКМ |
 | Создать бокс / mesh / площадку / склон / маркер | `A` / `Shift+A` / `P` / `Shift+R` / `K` |

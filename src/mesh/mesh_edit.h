@@ -13,6 +13,7 @@ typedef enum EditorMeshSelectMode {
 
 typedef struct EditorMeshEdit {
     int objectId;
+    const LevlDocument *document;
     EditorMeshSelectMode selectMode;
     bool vertices[LEVL_MESH_MAX_VERTICES];
     bool edges[EDITOR_MESH_MAX_EDGES];
@@ -20,7 +21,7 @@ typedef struct EditorMeshEdit {
 } EditorMeshEdit;
 
 void EditorMeshEditReset(EditorMeshEdit *edit);
-void EditorMeshEditBegin(EditorMeshEdit *edit, const LevlObject *object);
+void EditorMeshEditBegin(EditorMeshEdit *edit, const LevlDocument *document, const LevlObject *object);
 void EditorMeshEditSetSelectMode(EditorMeshEdit *edit, EditorMeshSelectMode mode);
 bool EditorMeshEditPick(EditorMeshEdit *edit, const LevlObject *object, Camera3D camera, Vector2 mouse, bool append);
 void EditorMeshEditSelectAll(EditorMeshEdit *edit, const LevlObject *object);
@@ -33,7 +34,7 @@ void EditorMeshEditRotate(EditorMeshEdit *edit, LevlObject *object, Vector3 axis
 bool EditorMeshEditGetSelectionCenter(const EditorMeshEdit *edit, const LevlObject *object, Vector3 *center);
 bool EditorMeshEditSubdivideFaces(EditorMeshEdit *edit, LevlObject *object);
 void EditorMeshEditSnapSelection(EditorMeshEdit *edit, LevlObject *object, float gridStep);
-void EditorMeshEditSnapAllVertices(LevlObject *object, float gridStep);
+void EditorMeshEditSnapAllVertices(const LevlDocument *document, LevlObject *object, float gridStep);
 void EditorMeshEditCycleFaceColor(EditorMeshEdit *edit, LevlObject *object, const Color *palette, int paletteCount);
 void EditorMeshEditDraw(const EditorMeshEdit *edit, const LevlObject *object);
 const char *EditorMeshSelectModeName(EditorMeshSelectMode mode);

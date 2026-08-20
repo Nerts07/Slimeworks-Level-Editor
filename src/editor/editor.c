@@ -138,7 +138,7 @@ static void ToggleEditMode(Editor *editor)
         return;
     }
     editor->mode = EDITOR_MODE_EDIT;
-    EditorMeshEditBegin(&editor->meshEdit, object);
+    EditorMeshEditBegin(&editor->meshEdit, &editor->document, object);
     SetStatus(editor, "Edit Mode — 1 vertex, 2 edge, 3 face; LMB select, Shift+LMB add/remove");
 }
 
@@ -351,10 +351,6 @@ static bool EditGizmoOrigin(const Editor *editor, const LevlObject *object, Vect
     *size = GizmoSize(editor, object);
     if (editor->mode == EDITOR_MODE_EDIT) {
         if (!EditorMeshEditGetSelectionCenter(&editor->meshEdit, object, origin)) return false;
-        Vector3 worldPosition, worldRotation, worldScale;
-        LevlObjectGetWorldTransform(&editor->document, object, &worldPosition, &worldRotation, &worldScale);
-        *origin = Vector3Add(worldPosition, Vector3Transform(Vector3Multiply(Vector3Subtract(*origin, object->position), worldScale),
-                                                             MatrixRotateXYZ(Vector3Scale(worldRotation, DEG2RAD))));
         *size = fmaxf(0.8f, *size * 0.45f);
     }
     return true;
@@ -650,26 +646,53 @@ static bool UpdateSharedShortcuts(Editor *editor)
     return false;
 }
 
+static LevlObject MakeClipboardObject(const Editor *editor, const LevlObject *object)
+{
+    LevlObject copy = *object;
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(&editor->document, object, &position, &rotation, &scale);
+    copy.parentId = 0;
+    copy.position = position;
+    if (copy.type == LEVL_OBJECT_BOX) {
+        copy.data.box.rotation = rotation;
+        copy.data.box.size = Vector3Multiply(copy.data.box.size, scale);
+    } else if (copy.type == LEVL_OBJECT_MESH) {
+        Matrix transform = MatrixMultiply(MatrixScale(scale.x, scale.y, scale.z), MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD)));
+        for (int vertex = 0; vertex < copy.data.mesh.vertexCount; ++vertex)
+            copy.data.mesh.vertices[vertex] = Vector3Transform(copy.data.mesh.vertices[vertex], transform);
+    } else if (copy.type == LEVL_OBJECT_MODEL) {
+        copy.data.model.rotation = rotation;
+        copy.data.model.scale = scale;
+    } else if (copy.type == LEVL_OBJECT_EMPTY) {
+        copy.data.empty.rotation = rotation;
+        copy.data.empty.scale = scale;
+    } else if (copy.type == LEVL_OBJECT_PLATFORM) {
+        copy.data.platform.size = Vector2Multiply(copy.data.platform.size, (Vector2){ scale.x, scale.z });
+        copy.data.platform.top = position.y + (copy.data.platform.top - object->position.y) * scale.y;
+    } else if (copy.type == LEVL_OBJECT_RAMP) {
+        Matrix transform = MatrixMultiply(MatrixScale(scale.x, scale.y, scale.z), MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD)));
+        copy.data.ramp.end = Vector3Add(position, Vector3Transform(Vector3Subtract(copy.data.ramp.end, object->position), transform));
+        copy.data.ramp.width *= fmaxf(scale.x, scale.z);
+    } else if (copy.type == LEVL_OBJECT_MARKER) {
+        copy.position = position;
+    }
+    return copy;
+}
+
 static void CopySelectedObject(Editor *editor)
 {
     LevlObject *object = SelectedObject(editor);
     if (!object) return;
-    char clipboard[16384];
-    Vector3 position, rotation, scale;
-    LevlObjectGetWorldTransform(&editor->document, object, &position, &rotation, &scale);
-    if (object->type == LEVL_OBJECT_MODEL) {
-        snprintf(clipboard, sizeof(clipboard), "SLIMEWORKS_OBJECT MODEL %s %s %s %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %d %.4f %.4f %.4f",
-                 object->name, object->tag, object->data.model.assetPath, position.x, position.y, position.z,
-                 rotation.x, rotation.y, rotation.z, scale.x, scale.y, scale.z, object->data.model.collidable ? 1 : 0,
-                 object->data.model.collisionSize.x, object->data.model.collisionSize.y, object->data.model.collisionSize.z);
-    } else if (object->type == LEVL_OBJECT_EMPTY) {
-        snprintf(clipboard, sizeof(clipboard), "SLIMEWORKS_OBJECT EMPTY %s %s %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f",
-                 object->name, object->tag, position.x, position.y, position.z,
-                 rotation.x, rotation.y, rotation.z, scale.x, scale.y, scale.z);
-    } else {
-        SetStatus(editor, "Clipboard currently supports models and Empty objects");
+    LevlObject copy = MakeClipboardObject(editor, object);
+    char clipboard[sizeof(LevlObject) * 2 + 64];
+    int offset = snprintf(clipboard, sizeof(clipboard), "SLIMEWORKS_OBJECT_V2 %zu ", sizeof(copy));
+    if (offset < 0 || (size_t)offset + sizeof(copy) * 2 + 1 > sizeof(clipboard)) {
+        SetStatus(editor, "Clipboard object is too large");
         return;
     }
+    const unsigned char *bytes = (const unsigned char *)&copy;
+    for (size_t byte = 0; byte < sizeof(copy); ++byte)
+        snprintf(clipboard + offset + byte * 2, 3, "%02X", bytes[byte]);
     SetClipboardText(clipboard);
     SetStatus(editor, TextFormat("Copied %s", object->name));
 }
@@ -677,8 +700,40 @@ static void CopySelectedObject(Editor *editor)
 static void PasteObject(Editor *editor)
 {
     const char *clipboard = GetClipboardText();
-    if (!clipboard || strncmp(clipboard, "SLIMEWORKS_OBJECT ", 19) != 0) {
-        SetStatus(editor, "Clipboard does not contain a Slimeworks model or Empty");
+    if (!clipboard) {
+        SetStatus(editor, "Clipboard is empty");
+        return;
+    }
+    size_t byteCount = 0;
+    int offset = 0;
+    if (sscanf(clipboard, "SLIMEWORKS_OBJECT_V2 %zu %n", &byteCount, &offset) == 1 && byteCount == sizeof(LevlObject)) {
+        size_t encodedLength = strlen(clipboard + offset);
+        if (encodedLength >= byteCount * 2) {
+            LevlObject copy = { 0 };
+            unsigned char *bytes = (unsigned char *)&copy;
+            bool valid = true;
+            for (size_t byte = 0; byte < byteCount; ++byte) {
+                int high = isdigit((unsigned char)clipboard[offset + byte * 2]) ? clipboard[offset + byte * 2] - '0' : toupper((unsigned char)clipboard[offset + byte * 2]) - 'A' + 10;
+                int low = isdigit((unsigned char)clipboard[offset + byte * 2 + 1]) ? clipboard[offset + byte * 2 + 1] - '0' : toupper((unsigned char)clipboard[offset + byte * 2 + 1]) - 'A' + 10;
+                if (high < 0 || high > 15 || low < 0 || low > 15) { valid = false; break; }
+                bytes[byte] = (unsigned char)((high << 4) | low);
+            }
+            if (valid && copy.type >= LEVL_OBJECT_BOX && copy.type <= LEVL_OBJECT_EMPTY) {
+                LevlObject *object = LevlDocumentAdd(&editor->document, copy.type);
+                if (!object) { SetStatus(editor, "Object limit reached (256)"); return; }
+                int newId = object->id;
+                *object = copy;
+                object->id = newId;
+                object->parentId = 0;
+                snprintf(object->name, sizeof(object->name), "%s_copy", copy.name);
+                editor->selectedIndex = editor->document.objectCount - 1;
+                SetStatus(editor, TextFormat("Pasted %s", LevlObjectTypeName(object->type)));
+                return;
+            }
+        }
+    }
+    if (strncmp(clipboard, "SLIMEWORKS_OBJECT ", 19) != 0) {
+        SetStatus(editor, "Clipboard does not contain a supported Slimeworks object");
         return;
     }
     LevlObject *object = NULL;
@@ -787,7 +842,7 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
             break;
         case EDITOR_UI_SNAP_MESH:
             if (object && object->type == LEVL_OBJECT_MESH) {
-                EditorMeshEditSnapAllVertices(object, editor->gridStep);
+                EditorMeshEditSnapAllVertices(&editor->document, object, editor->gridStep);
                 editor->document.dirty = true;
                 SetStatus(editor, TextFormat("Snapped all vertices to %.3g grid", editor->gridStep));
             }
@@ -821,7 +876,7 @@ static void ApplyUIAction(Editor *editor, EditorUIAction action, int targetIndex
             } else {
                 if (editor->mode == EDITOR_MODE_EDIT) {
                     if (editor->document.objects[targetIndex].type == LEVL_OBJECT_MESH) {
-                        EditorMeshEditBegin(&editor->meshEdit, &editor->document.objects[targetIndex]);
+                        EditorMeshEditBegin(&editor->meshEdit, &editor->document, &editor->document.objects[targetIndex]);
                     } else {
                         ToggleEditMode(editor);
                     }

@@ -20,9 +20,36 @@ static bool IsEditingObject(const EditorMeshEdit *edit, const LevlObject *object
     return edit && object && object->type == LEVL_OBJECT_MESH && edit->objectId == object->id;
 }
 
-static Vector3 VertexWorld(const LevlObject *object, int index)
+static Vector3 TransformLocalPoint(const EditorMeshEdit *edit, const LevlObject *object, Vector3 local)
 {
-    return Vector3Add(object->position, object->data.mesh.vertices[index]);
+    Vector3 position, rotation, scale;
+    if (!edit->document || !LevlObjectGetWorldTransform(edit->document, object, &position, &rotation, &scale))
+        return Vector3Add(object->position, local);
+    Matrix transform = MatrixMultiply(MatrixScale(scale.x, scale.y, scale.z), MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD)));
+    return Vector3Add(position, Vector3Transform(local, transform));
+}
+
+static Vector3 VertexWorld(const EditorMeshEdit *edit, const LevlObject *object, int index)
+{
+    return TransformLocalPoint(edit, object, object->data.mesh.vertices[index]);
+}
+
+static Vector3 WorldDeltaToLocal(const EditorMeshEdit *edit, const LevlObject *object, Vector3 delta)
+{
+    if (!edit->document) return delta;
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(edit->document, object, &position, &rotation, &scale);
+    Vector3 local = Vector3Transform(delta, MatrixInvert(MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD))));
+    return Vector3Divide(local, (Vector3){ fmaxf(scale.x, 0.0001f), fmaxf(scale.y, 0.0001f), fmaxf(scale.z, 0.0001f) });
+}
+
+static Vector3 WorldPointToLocal(const EditorMeshEdit *edit, const LevlObject *object, Vector3 world)
+{
+    if (!edit->document) return Vector3Subtract(world, object->position);
+    Vector3 position, rotation, scale;
+    LevlObjectGetWorldTransform(edit->document, object, &position, &rotation, &scale);
+    Vector3 local = Vector3Transform(Vector3Subtract(world, position), MatrixInvert(MatrixRotateXYZ(Vector3Scale(rotation, DEG2RAD))));
+    return Vector3Divide(local, (Vector3){ fmaxf(scale.x, 0.0001f), fmaxf(scale.y, 0.0001f), fmaxf(scale.z, 0.0001f) });
 }
 
 void EditorMeshEditReset(EditorMeshEdit *edit)
@@ -30,9 +57,10 @@ void EditorMeshEditReset(EditorMeshEdit *edit)
     *edit = (EditorMeshEdit){ .objectId = -1, .selectMode = EDITOR_MESH_SELECT_VERTEX };
 }
 
-void EditorMeshEditBegin(EditorMeshEdit *edit, const LevlObject *object)
+void EditorMeshEditBegin(EditorMeshEdit *edit, const LevlDocument *document, const LevlObject *object)
 {
     EditorMeshEditReset(edit);
+    edit->document = document;
     if (object && object->type == LEVL_OBJECT_MESH) edit->objectId = object->id;
 }
 
@@ -66,7 +94,7 @@ bool EditorMeshEditPick(EditorMeshEdit *edit, const LevlObject *object, Camera3D
     if (edit->selectMode == EDITOR_MESH_SELECT_VERTEX) {
         float best = 13.0f;
         for (int i = 0; i < mesh->vertexCount; ++i) {
-            float distance = Vector2Distance(mouse, GetWorldToScreen(VertexWorld(object, i), camera));
+            float distance = Vector2Distance(mouse, GetWorldToScreen(VertexWorld(edit, object, i), camera));
             if (distance < best) { best = distance; picked = i; }
         }
     } else if (edit->selectMode == EDITOR_MESH_SELECT_EDGE) {
@@ -74,8 +102,8 @@ bool EditorMeshEditPick(EditorMeshEdit *edit, const LevlObject *object, Camera3D
         int edgeCount = LevlMeshBuildEdges(mesh, edges, EDITOR_MESH_MAX_EDGES);
         float best = 16.0f;
         for (int i = 0; i < edgeCount; ++i) {
-            float distance = DistanceToSegment(mouse, GetWorldToScreen(VertexWorld(object, edges[i].a), camera),
-                                               GetWorldToScreen(VertexWorld(object, edges[i].b), camera));
+            float distance = DistanceToSegment(mouse, GetWorldToScreen(VertexWorld(edit, object, edges[i].a), camera),
+                                               GetWorldToScreen(VertexWorld(edit, object, edges[i].b), camera));
             if (distance < best) { best = distance; picked = i; }
         }
     } else {
@@ -84,9 +112,9 @@ bool EditorMeshEditPick(EditorMeshEdit *edit, const LevlObject *object, Camera3D
         for (int faceIndex = 0; faceIndex < mesh->faceCount; ++faceIndex) {
             const LevlMeshFace *face = &mesh->faces[faceIndex];
             for (int vertex = 1; vertex + 1 < face->vertexCount; ++vertex) {
-                RayCollision hit = GetRayCollisionTriangle(ray, VertexWorld(object, face->vertices[0]),
-                                                            VertexWorld(object, face->vertices[vertex]),
-                                                            VertexWorld(object, face->vertices[vertex + 1]));
+                RayCollision hit = GetRayCollisionTriangle(ray, VertexWorld(edit, object, face->vertices[0]),
+                                                            VertexWorld(edit, object, face->vertices[vertex]),
+                                                            VertexWorld(edit, object, face->vertices[vertex + 1]));
                 if (hit.hit && hit.distance < best) { best = hit.distance; picked = faceIndex; }
             }
         }
@@ -147,7 +175,7 @@ bool EditorMeshEditGetSelectionCenter(const EditorMeshEdit *edit, const LevlObje
     int count = 0;
     for (int i = 0; i < object->data.mesh.vertexCount; ++i) if (affected[i]) count++;
     if (count == 0) return false;
-    *center = Vector3Add(object->position, SelectionCenter(edit, object));
+    *center = TransformLocalPoint(edit, object, SelectionCenter(edit, object));
     return true;
 }
 
@@ -156,7 +184,8 @@ void EditorMeshEditMove(EditorMeshEdit *edit, LevlObject *object, Vector3 delta)
     if (!IsEditingObject(edit, object)) return;
     bool affected[LEVL_MESH_MAX_VERTICES];
     CollectAffectedVertices(edit, object, affected);
-    for (int i = 0; i < object->data.mesh.vertexCount; ++i) if (affected[i]) object->data.mesh.vertices[i] = Vector3Add(object->data.mesh.vertices[i], delta);
+    Vector3 localDelta = WorldDeltaToLocal(edit, object, delta);
+    for (int i = 0; i < object->data.mesh.vertexCount; ++i) if (affected[i]) object->data.mesh.vertices[i] = Vector3Add(object->data.mesh.vertices[i], localDelta);
 }
 
 void EditorMeshEditSnapSelection(EditorMeshEdit *edit, LevlObject *object, float gridStep)
@@ -165,21 +194,24 @@ void EditorMeshEditSnapSelection(EditorMeshEdit *edit, LevlObject *object, float
     bool affected[LEVL_MESH_MAX_VERTICES];
     CollectAffectedVertices(edit, object, affected);
     for (int i = 0; i < object->data.mesh.vertexCount; ++i) if (affected[i]) {
-        Vector3 *vertex = &object->data.mesh.vertices[i];
-        vertex->x = roundf((object->position.x + vertex->x) / gridStep) * gridStep - object->position.x;
-        vertex->y = roundf((object->position.y + vertex->y) / gridStep) * gridStep - object->position.y;
-        vertex->z = roundf((object->position.z + vertex->z) / gridStep) * gridStep - object->position.z;
+        Vector3 snapped = VertexWorld(edit, object, i);
+        snapped.x = roundf(snapped.x / gridStep) * gridStep;
+        snapped.y = roundf(snapped.y / gridStep) * gridStep;
+        snapped.z = roundf(snapped.z / gridStep) * gridStep;
+        object->data.mesh.vertices[i] = WorldPointToLocal(edit, object, snapped);
     }
 }
 
-void EditorMeshEditSnapAllVertices(LevlObject *object, float gridStep)
+void EditorMeshEditSnapAllVertices(const LevlDocument *document, LevlObject *object, float gridStep)
 {
     if (!object || object->type != LEVL_OBJECT_MESH || gridStep <= 0.0001f) return;
+    EditorMeshEdit transform = { .document = document };
     for (int i = 0; i < object->data.mesh.vertexCount; ++i) {
-        Vector3 *vertex = &object->data.mesh.vertices[i];
-        vertex->x = roundf((object->position.x + vertex->x) / gridStep) * gridStep - object->position.x;
-        vertex->y = roundf((object->position.y + vertex->y) / gridStep) * gridStep - object->position.y;
-        vertex->z = roundf((object->position.z + vertex->z) / gridStep) * gridStep - object->position.z;
+        Vector3 snapped = VertexWorld(&transform, object, i);
+        snapped.x = roundf(snapped.x / gridStep) * gridStep;
+        snapped.y = roundf(snapped.y / gridStep) * gridStep;
+        snapped.z = roundf(snapped.z / gridStep) * gridStep;
+        object->data.mesh.vertices[i] = WorldPointToLocal(&transform, object, snapped);
     }
 }
 
@@ -292,17 +324,17 @@ void EditorMeshEditDraw(const EditorMeshEdit *edit, const LevlObject *object)
     for (int faceIndex = 0; faceIndex < mesh->faceCount; ++faceIndex) if (edit->faces[faceIndex]) {
         const LevlMeshFace *face = &mesh->faces[faceIndex];
         for (int vertex = 1; vertex + 1 < face->vertexCount; ++vertex)
-            DrawTriangle3D(VertexWorld(object, face->vertices[0]), VertexWorld(object, face->vertices[vertex]),
-                           VertexWorld(object, face->vertices[vertex + 1]), Fade(YELLOW, 0.38f));
+            DrawTriangle3D(VertexWorld(edit, object, face->vertices[0]), VertexWorld(edit, object, face->vertices[vertex]),
+                           VertexWorld(edit, object, face->vertices[vertex + 1]), Fade(YELLOW, 0.38f));
     }
     LevlMeshEdge edges[EDITOR_MESH_MAX_EDGES];
     int edgeCount = LevlMeshBuildEdges(mesh, edges, EDITOR_MESH_MAX_EDGES);
     for (int edge = 0; edge < edgeCount; ++edge) {
         Color color = edit->edges[edge] ? YELLOW : Fade(BLACK, 0.8f);
-        DrawLine3D(VertexWorld(object, edges[edge].a), VertexWorld(object, edges[edge].b), color);
+        DrawLine3D(VertexWorld(edit, object, edges[edge].a), VertexWorld(edit, object, edges[edge].b), color);
     }
     for (int vertex = 0; vertex < mesh->vertexCount; ++vertex)
-        DrawSphere(VertexWorld(object, vertex), edit->vertices[vertex] ? 0.12f : 0.065f, edit->vertices[vertex] ? YELLOW : RAYWHITE);
+        DrawSphere(VertexWorld(edit, object, vertex), edit->vertices[vertex] ? 0.12f : 0.065f, edit->vertices[vertex] ? YELLOW : RAYWHITE);
 }
 
 const char *EditorMeshSelectModeName(EditorMeshSelectMode mode)
