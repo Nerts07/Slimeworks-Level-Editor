@@ -51,6 +51,9 @@ typedef struct Editor {
     bool snapEnabled;
     float gridStep;
     bool showColliders;
+    bool playerSpawnBlocked;
+    unsigned int spawnModelValidationHash;
+    bool spawnModelBlocked;
     EditorTextMode textMode;
     char textBuffer[512];
     char status[192];

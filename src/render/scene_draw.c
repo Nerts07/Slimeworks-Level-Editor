@@ -151,12 +151,9 @@ static void DrawRamp(const LevlObject *object)
     DrawLine3D(a, d, WHITE); DrawLine3D(b, c, WHITE);
 }
 
-static void DrawMarker(const LevlDocument *document, const LevlObject *object)
+static void DrawMarker(const LevlObject *object, bool playerSpawnBlocked)
 {
-    bool blocked = false;
-    Vector3 blockedSpawn;
-    if (strcmp(object->tag, "player_spawn") == 0 && LevlDocumentPlayerSpawnBlocked(document, &blockedSpawn, false))
-        blocked = Vector3Distance(blockedSpawn, object->position) < 0.001f;
+    bool blocked = strcmp(object->tag, "player_spawn") == 0 && playerSpawnBlocked;
     Color markerColor = strcmp(object->tag, "player_spawn") == 0 ? (blocked ? RED : LIME) : YELLOW;
     DrawSphere(object->position, 0.26f, markerColor);
     DrawCylinder((Vector3){ object->position.x, object->position.y + 0.7f, object->position.z }, 0.035f, 0.035f, 1.1f, 6, markerColor);
@@ -292,7 +289,7 @@ static void DrawInfiniteGrid(const Camera3D *camera, bool orthographic, float gr
 }
 
 void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache *modelCache, int cacheCount,
-                     bool showColliders, const Camera3D *camera, bool orthographicGrid, float gridStep)
+                     bool showColliders, bool playerSpawnBlocked, const Camera3D *camera, bool orthographicGrid, float gridStep)
 {
     DrawInfiniteGrid(camera, orthographicGrid, gridStep);
     for (int i = 0; i < document->objectCount; ++i) {
@@ -303,7 +300,7 @@ void EditorSceneDraw(LevlDocument *document, int selectedIndex, EditorModelCache
             case LEVL_OBJECT_PLATFORM: DrawPlatform(object); break;
             case LEVL_OBJECT_RAMP: DrawRamp(object); break;
             case LEVL_OBJECT_MODEL: DrawModelObject(modelCache, cacheCount, object); break;
-            case LEVL_OBJECT_MARKER: DrawMarker(document, object); break;
+            case LEVL_OBJECT_MARKER: DrawMarker(object, playerSpawnBlocked); break;
         }
         BoundingBox bounds = LevlObjectGetBounds(object);
         if (showColliders && object->type == LEVL_OBJECT_MESH) DrawMeshCollision(object);

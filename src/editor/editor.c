@@ -21,6 +21,32 @@ static void SetStatus(Editor *editor, const char *text)
     editor->statusSeconds = 6.0f;
 }
 
+static unsigned int SpawnValidationHash(const LevlDocument *document)
+{
+    unsigned int hash = 2166136261u;
+    for (int i = 0; i < document->objectCount; ++i) {
+        const LevlObject *object = &document->objects[i];
+        if (object->type != LEVL_OBJECT_MARKER && object->type != LEVL_OBJECT_MODEL) continue;
+        const unsigned char *bytes = (const unsigned char *)object->name;
+        size_t byteCount = object->type == LEVL_OBJECT_MARKER ? sizeof(object->name) + sizeof(object->tag) + sizeof(object->position) :
+                           sizeof(object->name) + sizeof(object->tag) + sizeof(object->position) + sizeof(object->data.model);
+        for (size_t byte = 0; byte < byteCount; ++byte) hash = (hash ^ bytes[byte]) * 16777619u;
+    }
+    return hash;
+}
+
+static void UpdateSpawnValidation(Editor *editor)
+{
+    Vector3 blockedSpawn;
+    bool blockedByEditableCollision = LevlDocumentPlayerSpawnBlocked(&editor->document, &blockedSpawn, false);
+    unsigned int validationHash = SpawnValidationHash(&editor->document);
+    if (validationHash != editor->spawnModelValidationHash) {
+        editor->spawnModelValidationHash = validationHash;
+        editor->spawnModelBlocked = LevlDocumentPlayerSpawnBlocked(&editor->document, &blockedSpawn, true);
+    }
+    editor->playerSpawnBlocked = blockedByEditableCollision || editor->spawnModelBlocked;
+}
+
 static LevlObject *SelectedObject(Editor *editor)
 {
     if (editor->selectedIndex < 0 || editor->selectedIndex >= editor->document.objectCount) return NULL;
@@ -672,8 +698,7 @@ static void DrawInspector(const Editor *editor)
     DrawTextLine(TextFormat("Grid %.3g | snap %s", editor->gridStep, editor->snapEnabled ? "on" : "off"), x, &y, 14, editor->snapEnabled ? LIME : LIGHTGRAY);
     DrawTextLine(TextFormat("Camera: %s", EditorNavigationModeName(&editor->navigation)), x, &y, 14, LIGHTGRAY);
     DrawTextLine(TextFormat("Mode: %s", EditorModeName(editor->mode)), x, &y, 14, editor->mode == EDITOR_MODE_EDIT ? YELLOW : LIGHTGRAY);
-    Vector3 blockedSpawn;
-    if (LevlDocumentPlayerSpawnBlocked(&editor->document, &blockedSpawn, false))
+    if (editor->playerSpawnBlocked)
         DrawTextLine("ERROR: player_spawn inside collision", x, &y, 14, RED);
     y += 8;
     const LevlObject *object = editor->selectedIndex >= 0 && editor->selectedIndex < editor->document.objectCount ? &editor->document.objects[editor->selectedIndex] : NULL;
@@ -771,12 +796,14 @@ void EditorRun(Editor *editor)
         if (editor->statusSeconds > 0.0f) editor->statusSeconds -= deltaTime;
         if (editor->textMode != EDITOR_TEXT_NONE) UpdateTextInput(editor);
         else UpdateEditorControls(editor, deltaTime);
+        UpdateSpawnValidation(editor);
 
         BeginDrawing();
         ClearBackground((Color){ 36, 62, 83, 255 });
         BeginMode3D(editor->camera);
         EditorSceneDraw(&editor->document, editor->selectedIndex, editor->modelCache, LEVL_MAX_OBJECTS,
-                        editor->showColliders, &editor->camera, EditorNavigationIsOrthographic(&editor->navigation), editor->gridStep);
+                        editor->showColliders, editor->playerSpawnBlocked, &editor->camera,
+                        EditorNavigationIsOrthographic(&editor->navigation), editor->gridStep);
         LevlObject *selected = SelectedObject(editor);
         if (editor->mode == EDITOR_MODE_EDIT && selected) {
             EditorMeshEditDraw(&editor->meshEdit, selected);
